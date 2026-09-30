@@ -38,6 +38,20 @@ def _landmark_points(landmarks) -> np.ndarray:
     )
 
 
+def finger_is_extended(
+    points: np.ndarray,
+    wrist: np.ndarray,
+    mcp_id: int,
+    pip_id: int,
+    tip_id: int,
+) -> bool:
+    """Return whether one non-thumb finger is deliberately extended."""
+    angle = joint_angle_degrees(points[mcp_id], points[pip_id], points[tip_id])
+    tip_distance = np.linalg.norm(points[tip_id] - wrist)
+    pip_distance = np.linalg.norm(points[pip_id] - wrist)
+    return bool(angle > 150.0 and tip_distance > pip_distance * 1.10)
+
+
 @dataclass(frozen=True)
 class ClickMetrics:
     pose: str
@@ -54,14 +68,8 @@ def measure_click_pose(landmarks) -> ClickMetrics:
     wrist = points[0]
     palm_size = max(float(np.linalg.norm(points[9] - wrist)), 1e-6)
 
-    def is_extended(mcp_id: int, pip_id: int, tip_id: int) -> bool:
-        angle = joint_angle_degrees(points[mcp_id], points[pip_id], points[tip_id])
-        tip_distance = np.linalg.norm(points[tip_id] - wrist)
-        pip_distance = np.linalg.norm(points[pip_id] - wrist)
-        return bool(angle > 150.0 and tip_distance > pip_distance * 1.10)
-
-    index_extended = is_extended(*FINGER_JOINTS[0])
-    middle_extended = is_extended(*FINGER_JOINTS[1])
+    index_extended = finger_is_extended(points, wrist, *FINGER_JOINTS[0])
+    middle_extended = finger_is_extended(points, wrist, *FINGER_JOINTS[1])
     middle_curled = finger_is_curled(points, wrist, *FINGER_JOINTS[1])
     ring_curled = finger_is_curled(points, wrist, *FINGER_JOINTS[2])
     little_curled = finger_is_curled(points, wrist, *FINGER_JOINTS[3])
@@ -198,10 +206,9 @@ def classify_scroll_pose(landmarks) -> ScrollMetrics:
 
     extended = []
     for mcp_id, pip_id, tip_id in FINGER_JOINTS[:2]:
-        angle = joint_angle_degrees(points[mcp_id], points[pip_id], points[tip_id])
-        tip_distance = np.linalg.norm(points[tip_id] - wrist)
-        pip_distance = np.linalg.norm(points[pip_id] - wrist)
-        extended.append(bool(angle > 150.0 and tip_distance > pip_distance * 1.10))
+        extended.append(
+            finger_is_extended(points, wrist, mcp_id, pip_id, tip_id)
+        )
 
     curled = [
         finger_is_curled(points, wrist, mcp_id, pip_id, tip_id)

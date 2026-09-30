@@ -18,6 +18,7 @@ class FakeMouseBackend:
         self.moves = []
         self.clicks = []
         self.scrolls = []
+        self.hotkeys = []
         self.raise_fail_safe = False
 
     def size(self):
@@ -33,6 +34,9 @@ class FakeMouseBackend:
 
     def scroll(self, steps, _pause):
         self.scrolls.append((steps, _pause))
+
+    def hotkey(self, *keys, _pause):
+        self.hotkeys.append((keys, _pause))
 
 
 class InvalidScreenBackend(FakeMouseBackend):
@@ -91,11 +95,14 @@ class SystemMouseControllerTests(unittest.TestCase):
     def test_click_and_scroll_require_active_control(self):
         self.assertFalse(self.controller.click("left"))
         self.assertFalse(self.controller.scroll(3))
+        self.assertFalse(self.controller.hotkey("command", "tab"))
         self.controller.toggle()
         self.assertTrue(self.controller.click("right"))
         self.assertTrue(self.controller.scroll(-3))
+        self.assertTrue(self.controller.hotkey("command", "tab"))
         self.assertEqual(self.backend.clicks, [("right", False)])
         self.assertEqual(self.backend.scrolls, [(-3, False)])
+        self.assertEqual(self.backend.hotkeys, [(('command', 'tab'), False)])
 
 
 if __name__ == "__main__":

@@ -105,6 +105,13 @@ class SystemMouseController:
             lambda: self.backend.scroll(steps, _pause=False)
         )
 
+    def hotkey(self, *keys: str) -> bool:
+        if not self.enabled:
+            return False
+        return self._handle_output_error(
+            lambda: self.backend.hotkey(*keys, _pause=False)
+        )
+
 
 def main() -> int:
     try:

@@ -4,10 +4,10 @@ AirDesk is a beginner-friendly macOS computer-vision project. It will grow
 stage by stage into a gesture-controlled desktop interface and an air-writing
 whiteboard.
 
-This repository currently contains **Stage 6: click and scroll**. The unlocked
-right hand can make debounced left/right clicks, and the unlocked left hand can
-scroll with two fingers. Real output starts disabled every time and must be
-deliberately enabled with `M`.
+This repository currently contains **Stage 7: three-finger system shortcuts**.
+The unlocked right hand can perform directional three-finger swipes in addition
+to Stage 6 clicks, while the left hand retains pointer and scroll control. Real
+output starts disabled every time and must be deliberately enabled with `M`.
 
 ## Planned project layout
 
@@ -24,7 +24,9 @@ airdesk/
 │       ├── hand_lock.py
 │       ├── virtual_cursor.py
 │       ├── air_mouse.py
-│       └── desktop_controls.py
+│       ├── desktop_controls.py
+│       ├── shortcut_config.py
+│       └── system_shortcuts.py
 ├── scripts/
 │   └── download_hand_model.py
 └── tests/
@@ -32,7 +34,8 @@ airdesk/
     ├── test_hand_lock.py
     ├── test_virtual_cursor.py
     ├── test_air_mouse.py
-    └── test_desktop_controls.py
+    ├── test_desktop_controls.py
+    └── test_system_shortcuts.py
 ```
 
 Application modules will be added under `src/airdesk/` only when their build
@@ -194,6 +197,36 @@ Run Stage 6 tests without system input:
 
 ```bash
 PYTHONPATH=src python -m unittest tests/test_desktop_controls.py -v
+```
+
+## Run Stage 7
+
+Stage 7 keeps all prior controls and adds a right-hand swipe pose: index,
+middle, and ring fingers up, with the thumb and little finger down. Hold the
+pose briefly, then move the whole hand:
+
+- Up: Mission Control (`Control + Up Arrow`)
+- Right: next app (`Command + Tab`)
+- Left: previous app (`Command + Shift + Tab`)
+
+The shortcuts are editable in `src/airdesk/shortcut_config.py`.
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m airdesk.system_shortcuts
+```
+
+Start in `SAFE PREVIEW`. A recognized pose shows `RIGHT: SWIPE`; after the
+dwell, the bottom diagnostic shows palm displacement as `dx` and `up`. A swipe
+must exceed the palm-size-normalized threshold and have a dominant direction.
+It fires once, then requires releasing the three-finger pose and observes a
+cooldown. Press `M` only after preview recognition is reliable. `Esc` globally
+disables real output.
+
+Run Stage 7 tests without sending shortcuts:
+
+```bash
+PYTHONPATH=src python -m unittest tests/test_system_shortcuts.py -v
 ```
 
 ## Requirements
