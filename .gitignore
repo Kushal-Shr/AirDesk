@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Files AirDesk may generate in later stages.
+captures/
+models/
+

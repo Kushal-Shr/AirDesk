@@ -1,0 +1,12 @@
+# Webcam frames and on-screen overlays
+opencv-python>=4.10,<5
+
+# Hand landmark tracking (introduced in Stage 2)
+mediapipe>=0.10.14,<0.11
+
+# Numerical calculations for landmarks and gestures
+numpy>=1.26,<3
+
+# Optional macOS mouse/keyboard output (introduced in Stage 5)
+PyAutoGUI>=0.9.54,<0.10
+
