@@ -62,7 +62,7 @@ class HandLockState:
             self.unlock_started_at = None
 
 
-def _angle_degrees(first: np.ndarray, vertex: np.ndarray, last: np.ndarray) -> float:
+def joint_angle_degrees(first: np.ndarray, vertex: np.ndarray, last: np.ndarray) -> float:
     """Return the smaller angle formed by three points."""
     first_vector = first - vertex
     last_vector = last - vertex
@@ -72,6 +72,20 @@ def _angle_degrees(first: np.ndarray, vertex: np.ndarray, last: np.ndarray) -> f
 
     cosine = np.clip(np.dot(first_vector, last_vector) / denominator, -1.0, 1.0)
     return float(np.degrees(np.arccos(cosine)))
+
+
+def finger_is_curled(
+    points: np.ndarray,
+    wrist: np.ndarray,
+    mcp_id: int,
+    pip_id: int,
+    tip_id: int,
+) -> bool:
+    """Return whether one non-thumb finger is folded toward the palm."""
+    joint_angle = joint_angle_degrees(points[mcp_id], points[pip_id], points[tip_id])
+    tip_to_wrist = np.linalg.norm(points[tip_id] - wrist)
+    pip_to_wrist = np.linalg.norm(points[pip_id] - wrist)
+    return bool(joint_angle < 125.0 or tip_to_wrist < pip_to_wrist * 1.08)
 
 
 def classify_fist(landmarks) -> FistMetrics:
@@ -85,12 +99,7 @@ def classify_fist(landmarks) -> FistMetrics:
     curled_fingers = 0
 
     for mcp_id, pip_id, tip_id in FINGER_JOINTS:
-        joint_angle = _angle_degrees(points[mcp_id], points[pip_id], points[tip_id])
-        tip_to_wrist = np.linalg.norm(points[tip_id] - wrist)
-        pip_to_wrist = np.linalg.norm(points[pip_id] - wrist)
-
-        # A folded finger has a bent PIP joint or a tip pulled back toward the wrist.
-        if joint_angle < 125.0 or tip_to_wrist < pip_to_wrist * 1.08:
+        if finger_is_curled(points, wrist, mcp_id, pip_id, tip_id):
             curled_fingers += 1
 
     palm_ids = (0, 5, 9, 13, 17)
@@ -102,12 +111,9 @@ def classify_fist(landmarks) -> FistMetrics:
         / palm_size
     )
 
-    # Four curled fingers are the normal case. The compact fallback tolerates one
-    # noisy landmark while still requiring all fingertips to cluster near the palm.
-    is_closed = (
-        (curled_fingers == 4 and compactness < 1.35)
-        or (curled_fingers >= 3 and compactness < 0.85)
-    )
+    # Requiring all four fingers prevents an index-point pose from becoming a fist.
+    # The 0.25-second unlock delay absorbs brief landmark misses on a real fist.
+    is_closed = curled_fingers == 4 and compactness < 1.35
     return FistMetrics(is_closed, curled_fingers, compactness)
 
 
@@ -279,4 +285,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

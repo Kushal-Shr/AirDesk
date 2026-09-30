@@ -4,9 +4,9 @@ AirDesk is a beginner-friendly macOS computer-vision project. It will grow
 stage by stage into a gesture-controlled desktop interface and an air-writing
 whiteboard.
 
-This repository currently contains **Stage 3: hand lock detection**. It detects
-left and right closed fists and displays a conservative per-hand safety state.
-It does not control the mouse, keyboard, or any macOS feature.
+This repository currently contains **Stage 4: virtual cursor**. An unlocked left
+index finger moves a mapped, smoothed cursor dot inside the webcam preview. It
+does not control the real mouse, keyboard, or any macOS feature.
 
 ## Planned project layout
 
@@ -20,12 +20,14 @@ airdesk/
 │       ├── __init__.py
 │       ├── webcam_preview.py
 │       ├── hand_landmarks.py
-│       └── hand_lock.py
+│       ├── hand_lock.py
+│       └── virtual_cursor.py
 ├── scripts/
 │   └── download_hand_model.py
 └── tests/
     ├── .gitkeep
-    └── test_hand_lock.py
+    ├── test_hand_lock.py
+    └── test_virtual_cursor.py
 ```
 
 Application modules will be added under `src/airdesk/` only when their build
@@ -83,6 +85,33 @@ Run the safety-logic tests with:
 
 ```bash
 PYTHONPATH=src python -m unittest tests/test_hand_lock.py -v
+```
+
+## Run Stage 4
+
+Run the safe on-screen cursor preview from the project root:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m airdesk.virtual_cursor
+```
+
+Move an unlocked left index finger inside the central active rectangle. The
+small magenta marker is the raw fingertip location; the larger cyan dot is the
+mapped and smoothed virtual cursor. The pointer activates only when the index
+finger is straight while the thumb, middle, ring, and little fingers are held
+down. An open palm does not move the cursor. A left fist immediately hides it.
+The right hand never moves it.
+
+The labels refer to **your anatomical left and right hands**, not which side of
+the preview they occupy. If your camera reports them in reverse, press `H`; the
+status panel changes from `HAND LABELS: NORMAL` to `HAND LABELS: SWAPPED`.
+Changing this setting safely relocks both hands. Press `Q` to quit.
+
+Run the mapping and smoothing tests with:
+
+```bash
+PYTHONPATH=src python -m unittest tests/test_virtual_cursor.py -v
 ```
 
 ## Requirements
