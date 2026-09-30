@@ -4,8 +4,9 @@ AirDesk is a beginner-friendly macOS computer-vision project. It will grow
 stage by stage into a gesture-controlled desktop interface and an air-writing
 whiteboard.
 
-This repository currently contains **Stage 0 only: project setup**. It does not
-open the webcam, track hands, or control macOS yet.
+This repository currently contains **Stage 1: webcam preview**. It opens a safe,
+mirrored camera preview with an FPS display. It does not track hands or control
+macOS.
 
 ## Planned project layout
 
@@ -16,7 +17,8 @@ airdesk/
 ├── .gitignore
 ├── src/
 │   └── airdesk/
-│       └── __init__.py
+│       ├── __init__.py
+│       └── webcam_preview.py
 └── tests/
     └── .gitkeep
 ```
@@ -24,14 +26,31 @@ airdesk/
 Application modules will be added under `src/airdesk/` only when their build
 stage begins. Tests will live in `tests/`.
 
+## Run Stage 1
+
+Activate the virtual environment, then start the webcam preview:
+
+```bash
+source .venv/bin/activate
+python src/airdesk/webcam_preview.py
+```
+
+Press `Q` while the preview window is active to quit. The program also releases
+the camera if it encounters an error or the window is closed.
+
+The first run may make macOS request Camera access for Terminal, Python, or VS
+Code. If access was denied, enable the app you used to run AirDesk under
+**System Settings → Privacy & Security → Camera**, then restart that app.
+
 ## Requirements
 
 - macOS
-- Python 3.11, 3.12, or 3.13
+- Python 3.11 or newer, with compatible package wheels available
 - A webcam (not used until Stage 1)
 
-Python 3.11 is a conservative choice for compatibility with the computer-
-vision packages used by this project. Check your version with:
+Python 3.11 is a conservative choice for compatibility with computer-vision
+packages, although your current Python 3.14 environment installed the Stage 0
+packages successfully. Check your version with:
 
 ```bash
 python3 --version
@@ -53,8 +72,8 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-If `python3.11` is unavailable but `python3 --version` reports Python 3.11,
-3.12, or 3.13, create the environment with:
+If `python3.11` is unavailable but `python3 --version` reports Python 3.11 or
+newer, create the environment with:
 
 ```bash
 python3 -m venv .venv
@@ -101,4 +120,3 @@ AirDesk will be developed in safe preview mode first. No real mouse or keyboard
 events are implemented in this stage. Later stages will add explicit hand
 locks, an emergency `Esc` stop, and a deliberate `M` toggle before system
 control is enabled.
-
