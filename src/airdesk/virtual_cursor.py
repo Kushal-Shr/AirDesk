@@ -180,6 +180,8 @@ def draw_status_panel(
     cursor_visible: bool,
     fps: float,
     swap_handedness: bool,
+    system_control_available: bool = False,
+    system_control_active: bool = False,
 ) -> None:
     overlay = frame.copy()
     panel_right = min(frame.shape[1] - 10, 500)
@@ -197,11 +199,12 @@ def draw_status_panel(
     left_suffix = " (NOT SEEN)" if "LEFT" not in seen_sides else ""
     right_suffix = " (NOT SEEN)" if "RIGHT" not in seen_sides else ""
 
+    airdesk_status = "ACTIVE" if system_control_active else "SAFE PREVIEW"
     rows = (
         (f"LEFT: {left_status}{left_suffix}", lock_states["LEFT"].locked),
         (f"RIGHT: {right_status}{right_suffix}", lock_states["RIGHT"].locked),
         ("MODE: DESKTOP", False),
-        ("AIRDESK: SAFE PREVIEW", False),
+        (f"AIRDESK: {airdesk_status}", system_control_active),
         (
             f"HAND LABELS: {'SWAPPED' if swap_handedness else 'NORMAL'} (H: toggle)",
             False,
@@ -220,9 +223,12 @@ def draw_status_panel(
             cv2.LINE_AA,
         )
 
+    controls = "Q: quit | H: hands"
+    if system_control_available:
+        controls = "Q: quit | H: hands | M: mouse | Esc: SAFE"
     cv2.putText(
         frame,
-        f"FPS: {fps:.1f}  |  Q: quit  |  anatomical left/right",
+        f"FPS: {fps:.1f} | {controls}",
         (24, 197),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.47,
@@ -251,7 +257,8 @@ def draw_virtual_cursor(
     cv2.circle(frame, cursor_position, 10, (255, 255, 0), -1, cv2.LINE_AA)
 
 
-def main() -> int:
+def run_virtual_cursor(system_mouse=None, window_name: str = WINDOW_NAME) -> int:
+    """Run Stage 4, optionally with the explicit Stage 5 mouse adapter."""
     if not MODEL_PATH.exists():
         print("The Hand Landmarker model is missing.")
         print("Run: python scripts/download_hand_model.py")
@@ -372,29 +379,54 @@ def main() -> int:
                     cursor_visible=cursor_position is not None,
                     fps=smoothed_fps,
                     swap_handedness=swap_handedness,
+                    system_control_available=system_mouse is not None,
+                    system_control_active=(
+                        system_mouse is not None and system_mouse.enabled
+                    ),
                 )
                 if raw_index_position is not None and cursor_position is not None:
                     draw_virtual_cursor(frame, raw_index_position, cursor_position)
+                    if system_mouse is not None and system_mouse.enabled:
+                        system_mouse.move_from_preview(
+                            cursor_position,
+                            (frame_width, frame_height),
+                        )
 
-                cv2.imshow(WINDOW_NAME, frame)
+                cv2.imshow(window_name, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), ord("Q")):
                     break
+                if key == 27:
+                    if system_mouse is not None:
+                        system_mouse.disable("Esc pressed")
+                    cursor_smoother.reset()
                 if key in (ord("h"), ord("H")):
                     swap_handedness = not swap_handedness
                     # Changing hand ownership is a safety boundary: relock both
                     # sides and discard the old cursor before using the new map.
                     lock_states = {"LEFT": HandLockState(), "RIGHT": HandLockState()}
                     cursor_smoother.reset()
+                    if system_mouse is not None:
+                        system_mouse.disable("hand labels changed")
                     mode = "SWAPPED" if swap_handedness else "NORMAL"
                     print(f"Hand label correction: {mode}")
-                if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+                if key in (ord("m"), ord("M")) and system_mouse is not None:
+                    system_mouse.toggle()
+                    cursor_smoother.reset()
+                if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                     break
     finally:
+        if system_mouse is not None:
+            system_mouse.disable("AirDesk closed")
         camera.release()
         cv2.destroyAllWindows()
 
     return 0
+
+
+def main() -> int:
+    """Run the Stage 4 preview with no possible system mouse output."""
+    return run_virtual_cursor()
 
 
 if __name__ == "__main__":

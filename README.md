@@ -4,9 +4,9 @@ AirDesk is a beginner-friendly macOS computer-vision project. It will grow
 stage by stage into a gesture-controlled desktop interface and an air-writing
 whiteboard.
 
-This repository currently contains **Stage 4: virtual cursor**. An unlocked left
-index finger moves a mapped, smoothed cursor dot inside the webcam preview. It
-does not control the real mouse, keyboard, or any macOS feature.
+This repository currently contains **Stage 5: safe real Air Mouse**. An unlocked
+left index-only pose can optionally move the real macOS pointer. Real output
+starts disabled every time and must be deliberately enabled with `M`.
 
 ## Planned project layout
 
@@ -21,13 +21,15 @@ airdesk/
 │       ├── webcam_preview.py
 │       ├── hand_landmarks.py
 │       ├── hand_lock.py
-│       └── virtual_cursor.py
+│       ├── virtual_cursor.py
+│       └── air_mouse.py
 ├── scripts/
 │   └── download_hand_model.py
 └── tests/
     ├── .gitkeep
     ├── test_hand_lock.py
-    └── test_virtual_cursor.py
+    ├── test_virtual_cursor.py
+    └── test_air_mouse.py
 ```
 
 Application modules will be added under `src/airdesk/` only when their build
@@ -114,6 +116,39 @@ Run the mapping and smoothing tests with:
 PYTHONPATH=src python -m unittest tests/test_virtual_cursor.py -v
 ```
 
+## Run Stage 5
+
+Before enabling real movement, allow the app that launches Python—usually
+Terminal, iTerm, or VS Code—under:
+
+```text
+System Settings → Privacy & Security → Accessibility
+```
+
+Restart that app if macOS requests it. Then run:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m airdesk.air_mouse
+```
+
+Real mouse output always starts in `SAFE PREVIEW`. Verify the virtual cursor
+first, then press `M` once to change the display to `AIRDESK: ACTIVE`. Press
+`Esc` to disable real output immediately. `M` toggles it deliberately, and `Q`
+quits. PyAutoGUI's corner fail-safe is also enabled.
+
+The Stage 4 command remains preview-only and cannot move the real mouse:
+
+```bash
+PYTHONPATH=src python -m airdesk.virtual_cursor
+```
+
+Run Stage 5's mouse tests without touching the real pointer:
+
+```bash
+PYTHONPATH=src python -m unittest tests/test_air_mouse.py -v
+```
+
 ## Requirements
 
 - macOS
@@ -177,9 +212,9 @@ source .venv/bin/activate
 - **OpenCV** reads webcam frames and draws interface overlays.
 - **MediaPipe** detects hands and their 21 landmarks.
 - **NumPy** performs coordinate and gesture calculations.
-- **PyAutoGUI** will optionally send mouse and keyboard input in a later stage.
+- **PyAutoGUI** optionally sends real mouse movement beginning in Stage 5.
 
-Real system input will remain off by default. Before Stage 5 can control the
+Real system input remains off by default. Before Stage 5 can control the
 mouse or keyboard, macOS may require permission for Terminal, Python, or VS
 Code under **System Settings → Privacy & Security → Accessibility**.
 
