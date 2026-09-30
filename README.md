@@ -4,9 +4,9 @@ AirDesk is a beginner-friendly macOS computer-vision project. It will grow
 stage by stage into a gesture-controlled desktop interface and an air-writing
 whiteboard.
 
-This repository currently contains **Stage 1: webcam preview**. It opens a safe,
-mirrored camera preview with an FPS display. It does not track hands or control
-macOS.
+This repository currently contains **Stage 2: hand landmarks**. It opens a safe,
+mirrored camera preview and draws MediaPipe's 21 landmarks for up to two hands.
+It does not recognize gestures or control macOS.
 
 ## Planned project layout
 
@@ -18,7 +18,10 @@ airdesk/
 ├── src/
 │   └── airdesk/
 │       ├── __init__.py
-│       └── webcam_preview.py
+│       ├── webcam_preview.py
+│       └── hand_landmarks.py
+├── scripts/
+│   └── download_hand_model.py
 └── tests/
     └── .gitkeep
 ```
@@ -41,6 +44,25 @@ the camera if it encounters an error or the window is closed.
 The first run may make macOS request Camera access for Terminal, Python, or VS
 Code. If access was denied, enable the app you used to run AirDesk under
 **System Settings → Privacy & Security → Camera**, then restart that app.
+
+## Run Stage 2
+
+Download the official MediaPipe Hand Landmarker model once:
+
+```bash
+source .venv/bin/activate
+python scripts/download_hand_model.py
+```
+
+Then run the landmark preview:
+
+```bash
+python src/airdesk/hand_landmarks.py
+```
+
+Hold one or both hands inside the camera frame. AirDesk draws all 21 landmarks,
+highlights landmark `8` at each index fingertip, and shows its pixel and
+normalized coordinates. Press `Q` to quit.
 
 ## Requirements
 
