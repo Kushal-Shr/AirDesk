@@ -4,9 +4,9 @@ AirDesk is a beginner-friendly macOS computer-vision project. It will grow
 stage by stage into a gesture-controlled desktop interface and an air-writing
 whiteboard.
 
-This repository currently contains **Stage 2: hand landmarks**. It opens a safe,
-mirrored camera preview and draws MediaPipe's 21 landmarks for up to two hands.
-It does not recognize gestures or control macOS.
+This repository currently contains **Stage 3: hand lock detection**. It detects
+left and right closed fists and displays a conservative per-hand safety state.
+It does not control the mouse, keyboard, or any macOS feature.
 
 ## Planned project layout
 
@@ -19,11 +19,13 @@ airdesk/
 │   └── airdesk/
 │       ├── __init__.py
 │       ├── webcam_preview.py
-│       └── hand_landmarks.py
+│       ├── hand_landmarks.py
+│       └── hand_lock.py
 ├── scripts/
 │   └── download_hand_model.py
 └── tests/
-    └── .gitkeep
+    ├── .gitkeep
+    └── test_hand_lock.py
 ```
 
 Application modules will be added under `src/airdesk/` only when their build
@@ -63,6 +65,25 @@ python src/airdesk/hand_landmarks.py
 Hold one or both hands inside the camera frame. AirDesk draws all 21 landmarks,
 highlights landmark `8` at each index fingertip, and shows its pixel and
 normalized coordinates. Press `Q` to quit.
+
+## Run Stage 3
+
+Run the hand-lock preview from the project root:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m airdesk.hand_lock
+```
+
+An open hand must remain visible for 0.25 seconds before its status becomes
+`READY`. A closed fist changes that hand to `LOCKED` immediately. A hand that
+is not visible is also treated as locked. Press `Q` to quit.
+
+Run the safety-logic tests with:
+
+```bash
+PYTHONPATH=src python -m unittest tests/test_hand_lock.py -v
+```
 
 ## Requirements
 
