@@ -16,6 +16,8 @@ class FakeMouseBackend:
 
     def __init__(self):
         self.moves = []
+        self.clicks = []
+        self.scrolls = []
         self.raise_fail_safe = False
 
     def size(self):
@@ -25,6 +27,12 @@ class FakeMouseBackend:
         if self.raise_fail_safe:
             raise self.FailSafeException
         self.moves.append((x, y, _pause))
+
+    def click(self, button, _pause):
+        self.clicks.append((button, _pause))
+
+    def scroll(self, steps, _pause):
+        self.scrolls.append((steps, _pause))
 
 
 class InvalidScreenBackend(FakeMouseBackend):
@@ -79,6 +87,15 @@ class SystemMouseControllerTests(unittest.TestCase):
         self.controller.toggle()
         self.controller.disable("test")
         self.assertFalse(self.controller.enabled)
+
+    def test_click_and_scroll_require_active_control(self):
+        self.assertFalse(self.controller.click("left"))
+        self.assertFalse(self.controller.scroll(3))
+        self.controller.toggle()
+        self.assertTrue(self.controller.click("right"))
+        self.assertTrue(self.controller.scroll(-3))
+        self.assertEqual(self.backend.clicks, [("right", False)])
+        self.assertEqual(self.backend.scrolls, [(-3, False)])
 
 
 if __name__ == "__main__":

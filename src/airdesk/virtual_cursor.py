@@ -182,6 +182,8 @@ def draw_status_panel(
     swap_handedness: bool,
     system_control_available: bool = False,
     system_control_active: bool = False,
+    left_action_status: str | None = None,
+    right_action_status: str | None = None,
 ) -> None:
     overlay = frame.copy()
     panel_right = min(frame.shape[1] - 10, 500)
@@ -194,8 +196,12 @@ def draw_status_panel(
         left_status = "POINTER"
     else:
         left_status = "READY"
+    if not lock_states["LEFT"].locked and left_action_status:
+        left_status = left_action_status
 
     right_status = "LOCKED" if lock_states["RIGHT"].locked else "READY"
+    if not lock_states["RIGHT"].locked and right_action_status:
+        right_status = right_action_status
     left_suffix = " (NOT SEEN)" if "LEFT" not in seen_sides else ""
     right_suffix = " (NOT SEEN)" if "RIGHT" not in seen_sides else ""
 
@@ -367,6 +373,22 @@ def run_virtual_cursor(system_mouse=None, window_name: str = WINDOW_NAME) -> int
                 else:
                     cursor_smoother.reset()
 
+                # Put the real pointer at this frame's newest smoothed position
+                # before processing a right-hand click. This matters for small
+                # targets such as macOS menu-bar icons.
+                if (
+                    cursor_position is not None
+                    and system_mouse is not None
+                    and system_mouse.enabled
+                ):
+                    system_mouse.move_from_preview(
+                        cursor_position,
+                        (frame_width, frame_height),
+                    )
+
+                if system_mouse is not None and hasattr(system_mouse, "update_gestures"):
+                    system_mouse.update_gestures(observations, lock_states, current_time)
+
                 draw_active_area(
                     frame,
                     active_area,
@@ -383,14 +405,52 @@ def run_virtual_cursor(system_mouse=None, window_name: str = WINDOW_NAME) -> int
                     system_control_active=(
                         system_mouse is not None and system_mouse.enabled
                     ),
+                    left_action_status=(
+                        getattr(system_mouse, "left_status", None)
+                        if system_mouse is not None
+                        else None
+                    ),
+                    right_action_status=(
+                        getattr(system_mouse, "right_status", None)
+                        if system_mouse is not None
+                        else None
+                    ),
                 )
                 if raw_index_position is not None and cursor_position is not None:
                     draw_virtual_cursor(frame, raw_index_position, cursor_position)
-                    if system_mouse is not None and system_mouse.enabled:
-                        system_mouse.move_from_preview(
-                            cursor_position,
-                            (frame_width, frame_height),
-                        )
+
+                feedback_text = (
+                    getattr(system_mouse, "feedback_text", "")
+                    if system_mouse is not None
+                    else ""
+                )
+                diagnostic_text = (
+                    getattr(system_mouse, "diagnostic_text", "")
+                    if system_mouse is not None
+                    else ""
+                )
+                if diagnostic_text:
+                    cv2.putText(
+                        frame,
+                        diagnostic_text,
+                        (20, frame_height - 62),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.52,
+                        (255, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                if feedback_text:
+                    cv2.putText(
+                        frame,
+                        feedback_text,
+                        (max(20, frame_width // 2 - 150), frame_height - 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.75,
+                        (0, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
 
                 cv2.imshow(window_name, frame)
                 key = cv2.waitKey(1) & 0xFF
@@ -417,7 +477,7 @@ def run_virtual_cursor(system_mouse=None, window_name: str = WINDOW_NAME) -> int
                     break
     finally:
         if system_mouse is not None:
-            system_mouse.disable("AirDesk closed")
+            system_mouse.close()
         camera.release()
         cv2.destroyAllWindows()
 

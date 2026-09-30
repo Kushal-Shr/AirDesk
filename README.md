@@ -4,9 +4,10 @@ AirDesk is a beginner-friendly macOS computer-vision project. It will grow
 stage by stage into a gesture-controlled desktop interface and an air-writing
 whiteboard.
 
-This repository currently contains **Stage 5: safe real Air Mouse**. An unlocked
-left index-only pose can optionally move the real macOS pointer. Real output
-starts disabled every time and must be deliberately enabled with `M`.
+This repository currently contains **Stage 6: click and scroll**. The unlocked
+right hand can make debounced left/right clicks, and the unlocked left hand can
+scroll with two fingers. Real output starts disabled every time and must be
+deliberately enabled with `M`.
 
 ## Planned project layout
 
@@ -22,14 +23,16 @@ airdesk/
 │       ├── hand_landmarks.py
 │       ├── hand_lock.py
 │       ├── virtual_cursor.py
-│       └── air_mouse.py
+│       ├── air_mouse.py
+│       └── desktop_controls.py
 ├── scripts/
 │   └── download_hand_model.py
 └── tests/
     ├── .gitkeep
     ├── test_hand_lock.py
     ├── test_virtual_cursor.py
-    └── test_air_mouse.py
+    ├── test_air_mouse.py
+    └── test_desktop_controls.py
 ```
 
 Application modules will be added under `src/airdesk/` only when their build
@@ -147,6 +150,50 @@ Run Stage 5's mouse tests without touching the real pointer:
 
 ```bash
 PYTHONPATH=src python -m unittest tests/test_air_mouse.py -v
+```
+
+## Run Stage 6
+
+Stage 6 uses the same Camera and Accessibility permissions as Stage 5. It also
+starts a read-only macOS event monitor for `Esc`, so the emergency stop still
+works after a click gives another app focus. If Accessibility permission is
+missing, Stage 6 refuses to start. Permission is checked inside the exact
+Terminal, iTerm, or VS Code process launching AirDesk because a different app's
+permission does not carry over.
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m airdesk.desktop_controls
+```
+
+Real output begins in `SAFE PREVIEW`. Gesture feedback still appears there, so
+test recognition before pressing `M`:
+
+- Right index finger only, held briefly: left click
+- Right index + middle fingers, held briefly: right click
+- Left index + middle fingers extended, then move vertically: scroll
+
+Each click pose must dwell briefly, fires once per release, and has a cooldown.
+Scroll begins only after a short dwell and movement threshold. A fist or missing
+hand cancels that hand's gesture state. `Esc` disables all real output, `M`
+toggles it, `H` corrects hand labels, and `Q` quits.
+
+The bottom diagnostic shows whether the right index, middle, ring, little, and
+thumb are interpreted as `UP` or `DOWN`, followed by the recognized click pose.
+Brief one-frame landmark dropouts are tolerated.
+
+Real pointer movement is applied before click recognition on each frame so a
+click uses the latest smoothed position. This is important for small targets
+such as macOS menu-bar icons.
+
+Click poses contain at least one extended finger, so they no longer conflict
+with closed-fist locking. Lower the extended finger or fingers after each click
+to re-arm the one-shot detector.
+
+Run Stage 6 tests without system input:
+
+```bash
+PYTHONPATH=src python -m unittest tests/test_desktop_controls.py -v
 ```
 
 ## Requirements

@@ -50,14 +50,33 @@ class SystemMouseController:
             )
 
     def toggle(self) -> None:
+        self.reset_actions(require_release=not self.enabled)
         self.enabled = not self.enabled
         state = "ACTIVE" if self.enabled else "SAFE PREVIEW"
         print(f"Real mouse control: {state}")
 
     def disable(self, reason: str) -> None:
+        self.reset_actions(require_release=True)
         if self.enabled:
             self.enabled = False
             print(f"Real mouse control: SAFE PREVIEW ({reason})")
+
+    def reset_actions(self, require_release: bool = False) -> None:
+        """Hook for later stages that have stateful click/scroll gestures."""
+
+    def close(self) -> None:
+        self.disable("AirDesk closed")
+
+    def _handle_output_error(self, action) -> bool:
+        try:
+            action()
+        except self.backend.FailSafeException:
+            self.disable("PyAutoGUI corner fail-safe triggered")
+            return False
+        except Exception as error:
+            self.disable(f"system output failed: {error}")
+            return False
+        return True
 
     def move_from_preview(
         self,
@@ -68,15 +87,23 @@ class SystemMouseController:
             return False
 
         screen_point = map_preview_to_screen(point, preview_size, self.screen_size)
-        try:
-            self.backend.moveTo(*screen_point, _pause=False)
-        except self.backend.FailSafeException:
-            self.disable("PyAutoGUI corner fail-safe triggered")
+        return self._handle_output_error(
+            lambda: self.backend.moveTo(*screen_point, _pause=False)
+        )
+
+    def click(self, button: str) -> bool:
+        if not self.enabled:
             return False
-        except Exception as error:
-            self.disable(f"mouse output failed: {error}")
+        return self._handle_output_error(
+            lambda: self.backend.click(button=button, _pause=False)
+        )
+
+    def scroll(self, steps: int) -> bool:
+        if not self.enabled:
             return False
-        return True
+        return self._handle_output_error(
+            lambda: self.backend.scroll(steps, _pause=False)
+        )
 
 
 def main() -> int:
