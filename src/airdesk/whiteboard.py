@@ -35,6 +35,7 @@ MODE_SWITCH_HOLD_SECONDS = 0.80
 MAX_SENTENCE_CHARACTERS = 160
 LINE_IDLE_SECONDS = 3.0
 MIN_LINE_CONFIDENCE = 0.90
+MIN_GEMINI_INSERT_CONFIDENCE = 0.90
 
 
 def is_open_palm(landmarks) -> bool:
@@ -764,7 +765,7 @@ class WholeLineWritingController(AirWritingController):
         )
         return True
 
-    def _poll_gemini_review(self) -> None:
+    def _poll_gemini_review(self, system_controller) -> None:
         future = self._gemini_future
         if future is None or not future.done():
             return
@@ -782,10 +783,27 @@ class WholeLineWritingController(AirWritingController):
             return
         self.last_gemini_result = result
         self.overlay.set_preview(result.text)
-        changed = "AGREES" if result.text == local_text else f"SUGGESTS: {result.text}"
-        self.recognition_feedback = (
-            f"GEMINI {changed} ({round(result.confidence * 100)}%) — PREVIEW ONLY"
-        )
+        if not self.text_output_allowed:
+            self.recognition_feedback = (
+                "GEMINI RESULT READY — INSERT BLOCKED BY ESC; line kept"
+            )
+            return
+        if result.confidence < MIN_GEMINI_INSERT_CONFIDENCE:
+            self.recognition_feedback = (
+                f"GEMINI LOW CONFIDENCE {round(result.confidence * 100)}% — "
+                "PREVIEW ONLY"
+            )
+            return
+        if system_controller.commit_text(result.text):
+            self.last_inserted_text = result.text
+            action = "AGREED AND INSERTED" if result.text == local_text else "CORRECTED AND INSERTED"
+            self.recognition_feedback = (
+                f"GEMINI {action}: {result.text} "
+                f"({round(result.confidence * 100)}%)"
+            )
+            self._clear_writing()
+        else:
+            self.recognition_feedback = "GEMINI READY — COULD NOT TYPE; line kept"
 
     def _recognize_and_auto_insert(self, system_controller) -> None:
         self.last_ink_at = None
@@ -854,7 +872,7 @@ class WholeLineWritingController(AirWritingController):
         all_hands=None,
     ) -> None:
         self.ensure_canvas(frame_width, frame_height)
-        self._poll_gemini_review()
+        self._poll_gemini_review(system_controller)
         left = observations.get("LEFT")
         right = observations.get("RIGHT")
         left_open = left is not None and is_open_palm(left[1])

@@ -608,7 +608,7 @@ class WholeLineWritingControllerTests(unittest.TestCase):
         self.assertTrue(np.any(self.controller.canvas < 255))
         self.assertIn("LOW CONFIDENCE", self.controller.recognition_feedback)
 
-    def test_low_confidence_line_uses_gemini_as_preview_only(self):
+    def test_high_confidence_gemini_correction_is_inserted(self):
         reviewer = FakeGeminiReviewer("Hi C!", confidence=0.95)
         controller = WholeLineWritingController(
             self.overlay,
@@ -624,12 +624,62 @@ class WholeLineWritingControllerTests(unittest.TestCase):
 
         controller.update({}, self.unlocked, 4.1, 640, 480, self.system)
         controller._gemini_future.result(timeout=1.0)
-        controller._poll_gemini_review()
+        controller._poll_gemini_review(self.system)
+
+        self.assertEqual(self.system.committed_text, ["Hi C!"])
+        self.assertEqual(self.overlay.preview, "Hi C!")
+        self.assertEqual(len(reviewer.calls), 1)
+        self.assertIn("CORRECTED AND INSERTED", controller.recognition_feedback)
+        self.assertFalse(controller.has_line_ink)
+        self.assertTrue(np.all(controller.canvas == 255))
+        controller.close()
+
+    def test_low_confidence_gemini_result_remains_preview_only(self):
+        reviewer = FakeGeminiReviewer("Hi C!", confidence=0.72)
+        controller = WholeLineWritingController(
+            self.overlay,
+            FakeLineRecognizer("Hi c!", confidence=0.70),
+            idle_seconds=3.0,
+            gemini_reviewer=reviewer,
+        )
+        controller.mode = "AIR_WRITE"
+        controller.ensure_canvas(640, 480)
+        controller.canvas[200:260, 200:500] = 0
+        controller.has_line_ink = True
+        controller.last_ink_at = 1.0
+
+        controller.update({}, self.unlocked, 4.1, 640, 480, self.system)
+        controller._gemini_future.result(timeout=1.0)
+        controller._poll_gemini_review(self.system)
 
         self.assertEqual(self.system.committed_text, [])
         self.assertEqual(self.overlay.preview, "Hi C!")
-        self.assertEqual(len(reviewer.calls), 1)
         self.assertIn("PREVIEW ONLY", controller.recognition_feedback)
+        self.assertTrue(controller.has_line_ink)
+        controller.close()
+
+    def test_escape_blocks_completed_gemini_insertion(self):
+        reviewer = FakeGeminiReviewer("Hi C!", confidence=0.98)
+        controller = WholeLineWritingController(
+            self.overlay,
+            FakeLineRecognizer("Hi c!", confidence=0.70),
+            idle_seconds=3.0,
+            gemini_reviewer=reviewer,
+        )
+        controller.mode = "AIR_WRITE"
+        controller.ensure_canvas(640, 480)
+        controller.canvas[200:260, 200:500] = 0
+        controller.has_line_ink = True
+        controller.last_ink_at = 1.0
+
+        controller.update({}, self.unlocked, 4.1, 640, 480, self.system)
+        controller._gemini_future.result(timeout=1.0)
+        controller.emergency_stop()
+        controller._poll_gemini_review(self.system)
+
+        self.assertEqual(self.system.committed_text, [])
+        self.assertTrue(controller.has_line_ink)
+        self.assertIn("BLOCKED BY ESC", controller.recognition_feedback)
         controller.close()
 
 

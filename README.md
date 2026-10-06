@@ -474,8 +474,9 @@ PYTHONPATH=src python -m airdesk.air_writing
 Shell environment variables still take precedence over `.env` values.
 `GEMINI_MODEL` can optionally select another compatible model; the default is
 `gemini-3.8-flash`. Capacity errors (`429` or `503`) automatically retry once
-with `GEMINI_FALLBACK_MODEL`. Never commit an API key to the repository. In this first
-safe stage, Gemini corrections are labeled `PREVIEW ONLY` and are not typed.
+with `GEMINI_FALLBACK_MODEL`. Never commit an API key to the repository. Gemini
+corrections at 90% confidence or higher are inserted into the previously
+focused text field; lower-confidence results remain labeled `PREVIEW ONLY`.
 High-confidence local results continue to use the existing automatic insertion.
 If the key, network, SDK, or Gemini service is unavailable, local recognition
 continues normally.

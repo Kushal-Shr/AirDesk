@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .env
+.env.example
 
 # Files AirDesk may generate in later stages.
 captures/

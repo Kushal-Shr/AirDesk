@@ -56,7 +56,7 @@ def main() -> int:
     else:
         print(
             f"Gemini review: ON ({gemini_reviewer.model}); low-confidence results "
-            "are previewed, never auto-inserted."
+            "are auto-inserted when Gemini confidence is at least 90%."
         )
     print(
         "Undo: hold a LEFT thumb-index pinch with middle, ring, and little up."
