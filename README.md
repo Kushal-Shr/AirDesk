@@ -6,7 +6,8 @@ stage by stage into a gesture-controlled desktop interface with air-writing.
 This repository currently contains **Stage 9: One-Character Recognition**.
 AirDesk draws through a click-through desktop overlay, recognizes one uppercase
 letter with an EMNIST-trained neural network, and types it only after a
-thumbs-up hold.
+thumbs-up hold. Personal Training Mode can now collect labeled uppercase,
+lowercase, and symbol samples for the next fine-tuning stage.
 
 ## Planned project layout
 
@@ -28,6 +29,9 @@ airdesk/
 │       ├── system_shortcuts.py
 │       ├── native_overlay.py
 │       ├── character_recognition.py
+│       ├── emnist_model.py
+│       ├── personal_samples.py
+│       ├── collect_samples.py
 │       ├── air_writing.py
 │       └── whiteboard.py
 ├── scripts/
@@ -40,6 +44,7 @@ airdesk/
     ├── test_desktop_controls.py
     ├── test_system_shortcuts.py
     ├── test_character_recognition.py
+    ├── test_personal_samples.py
     └── test_whiteboard.py
 ```
 
@@ -249,6 +254,8 @@ Air-writing controls:
 
 - Right thumb–index pinch held: pen down and draw
 - Release the right pinch: pen up
+- Cyan ring: current right index-fingertip aim position
+- Filled orange dot: pinch is active and the pen is drawing
 - Close the right fist: immediately lift the pen
 - Left open palm held for one second: clear the canvas
 - Both open palms held for one second: hide the ink and return to Desktop Mode
@@ -310,6 +317,72 @@ Run the recognition and gesture tests without typing into another app:
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
+
+## Personal Training Mode
+
+Personal Training Mode collects labeled examples of your own air writing. It
+does not type into other apps and does not require Accessibility permission.
+Start with five examples per lowercase letter:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m airdesk.collect_samples \
+  --group lowercase --samples-per-character 5
+```
+
+Hold both palms open to enter the transparent training overlay. Draw the shown
+character inside the guide, release the pinch, then hold a right thumbs-up to
+save it. Hold the left palm open to clear a bad attempt. The collector resumes
+from existing samples if it is restarted. A cyan ring shows the current aiming
+point before the pinch; it turns into a filled orange dot while drawing.
+
+Collect symbols separately so the prompted label is always clear:
+
+```bash
+PYTHONPATH=src python -m airdesk.collect_samples \
+  --group symbols --samples-per-character 5
+```
+
+The starter symbol set is:
+
+```text
+. , ? ! @ # $ % & + - _ = ( ) [ ] { } / :
+```
+
+Use `--group uppercase` to improve the current capital-letter model, or
+`--group digits` to collect `0`–`9`. Use `--group all` for a combined
+collection session. Samples are stored under
+`personal_data/` and excluded from Git. Each sample contains a 28×28 model
+image, a guide-relative image that preserves punctuation position, and JSON
+stroke-path metadata.
+
+Train four guarded, mode-specific models from the collected samples and the
+local EMNIST data:
+
+```bash
+PYTHONPATH=src python scripts/train_personal_models.py
+```
+
+The trainer reserves the final personal sample for every character as a strict
+test example. Uppercase, lowercase, and digit models also have to pass a held-
+out EMNIST test. A model that misses either accuracy threshold is saved only as
+`*.candidate.pt`; only a validated model receives the runtime-ready
+`airdesk_<mode>.pt` name. Detailed accuracy and confusion results are written
+to `models/personal_training_report.json`.
+
+Run live AirDesk with exactly one validated recognition mode selected:
+
+```bash
+PYTHONPATH=src python -m airdesk.air_writing --recognition-mode uppercase
+PYTHONPATH=src python -m airdesk.air_writing --recognition-mode lowercase
+PYTHONPATH=src python -m airdesk.air_writing --recognition-mode digits
+PYTHONPATH=src python -m airdesk.air_writing --recognition-mode symbols
+```
+
+The launcher refuses checkpoints that did not pass validation. Symbol mode
+shows a fixed writing guide because punctuation position distinguishes pairs
+such as `.`/`,` and `-`/`_`. Draw symbols inside that guide. The other modes
+crop and center the character automatically.
 
 ## Requirements
 

@@ -11,6 +11,9 @@ class MemoryInkOverlay:
         self.strokes: list[list[tuple[int, int]]] = []
         self.visible = False
         self.status = ""
+        self.guide = None
+        self.cursor_point = None
+        self.cursor_active = False
 
     def show(self) -> None:
         self.visible = True
@@ -35,6 +38,20 @@ class MemoryInkOverlay:
 
     def set_status(self, text: str) -> None:
         self.status = text
+
+    def set_guide(self, guide) -> None:
+        self.guide = guide
+
+    def clear_guide(self) -> None:
+        self.guide = None
+
+    def set_cursor(self, point: tuple[int, int], active: bool) -> None:
+        self.cursor_point = point
+        self.cursor_active = active
+
+    def hide_cursor(self) -> None:
+        self.cursor_point = None
+        self.cursor_active = False
 
     def pump(self) -> None:
         pass
@@ -91,6 +108,8 @@ class NativeInkOverlay:
                     return None
                 view_self.ink_strokes = []
                 view_self.status_text = ""
+                view_self.writing_guide = None
+                view_self.pen_cursor = None
                 return view_self
 
             def isOpaque(view_self):
@@ -99,6 +118,42 @@ class NativeInkOverlay:
             def drawRect_(view_self, _dirty_rect):
                 height = view_self.bounds().size.height
                 width = view_self.bounds().size.width
+
+                if view_self.writing_guide is not None:
+                    guide_x, guide_y, guide_width, guide_height, baseline_y, label = (
+                        view_self.writing_guide
+                    )
+                    guide_path = kit["NSBezierPath"].bezierPathWithRoundedRect_xRadius_yRadius_(
+                        kit["NSMakeRect"](
+                            guide_x,
+                            height - guide_y - guide_height,
+                            guide_width,
+                            guide_height,
+                        ),
+                        18,
+                        18,
+                    )
+                    guide_path.setLineWidth_(2.0)
+                    kit["NSColor"].colorWithCalibratedWhite_alpha_(0.85, 0.55).setStroke()
+                    guide_path.stroke()
+                    baseline = kit["NSBezierPath"].bezierPath()
+                    baseline.setLineWidth_(1.5)
+                    baseline.moveToPoint_(kit["NSMakePoint"](guide_x, height - baseline_y))
+                    baseline.lineToPoint_(
+                        kit["NSMakePoint"](guide_x + guide_width, height - baseline_y)
+                    )
+                    baseline.stroke()
+                    guide_attributes = {
+                        kit["NSFontAttributeName"]: kit["NSFont"].boldSystemFontOfSize_(24.0),
+                        kit["NSForegroundColorAttributeName"]: kit["NSColor"].whiteColor(),
+                    }
+                    kit["NSString"].stringWithString_(f"Draw: {label}").drawAtPoint_withAttributes_(
+                        kit["NSMakePoint"](
+                            guide_x + 12,
+                            height - guide_y - 34,
+                        ),
+                        guide_attributes,
+                    )
                 kit["NSColor"].colorWithCalibratedRed_green_blue_alpha_(
                     0.16, 0.47, 1.0, 0.96
                 ).setStroke()
@@ -114,6 +169,30 @@ class NativeInkOverlay:
                     for point_x, point_y in stroke[1:]:
                         path.lineToPoint_(kit["NSMakePoint"](point_x, height - point_y))
                     path.stroke()
+
+                if view_self.pen_cursor is not None:
+                    (cursor_x, cursor_y), cursor_active = view_self.pen_cursor
+                    radius = 9 if cursor_active else 8
+                    cursor_path = kit["NSBezierPath"].bezierPathWithOvalInRect_(
+                        kit["NSMakeRect"](
+                            cursor_x - radius,
+                            height - cursor_y - radius,
+                            radius * 2,
+                            radius * 2,
+                        )
+                    )
+                    cursor_path.setLineWidth_(3.0)
+                    if cursor_active:
+                        kit["NSColor"].colorWithCalibratedRed_green_blue_alpha_(
+                            1.0, 0.32, 0.12, 0.98
+                        ).setFill()
+                        cursor_path.fill()
+                        kit["NSColor"].whiteColor().setStroke()
+                    else:
+                        kit["NSColor"].colorWithCalibratedRed_green_blue_alpha_(
+                            0.10, 0.95, 1.0, 0.95
+                        ).setStroke()
+                    cursor_path.stroke()
 
                 panel = kit["NSBezierPath"].bezierPathWithRoundedRect_xRadius_yRadius_(
                     kit["NSMakeRect"](16, height - 66, min(width - 32, 900), 48),
@@ -194,6 +273,22 @@ class NativeInkOverlay:
 
     def set_status(self, text: str) -> None:
         self._view.status_text = text
+        self._view.setNeedsDisplay_(True)
+
+    def set_guide(self, guide) -> None:
+        self._view.writing_guide = guide
+        self._view.setNeedsDisplay_(True)
+
+    def clear_guide(self) -> None:
+        self._view.writing_guide = None
+        self._view.setNeedsDisplay_(True)
+
+    def set_cursor(self, point: tuple[int, int], active: bool) -> None:
+        self._view.pen_cursor = (point, active)
+        self._view.setNeedsDisplay_(True)
+
+    def hide_cursor(self) -> None:
+        self._view.pen_cursor = None
         self._view.setNeedsDisplay_(True)
 
     def pump(self) -> None:
