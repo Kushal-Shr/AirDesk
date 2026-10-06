@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 
@@ -9,6 +10,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from .control_panel import build_control_panel_status
 from .hand_landmarks import (
     CAMERA_INDEX,
     MODEL_PATH,
@@ -32,6 +34,99 @@ ACTIVE_MARGIN_TOP = 0.28
 ACTIVE_MARGIN_BOTTOM = 0.12
 CURSOR_SMOOTHING = 0.22
 MIN_HANDEDNESS_CONFIDENCE = 0.65
+# This camera reports mirrored MediaPipe handedness for the user's setup.
+# Start corrected so anatomical LEFT and RIGHT work without pressing H.
+DEFAULT_SWAP_HANDEDNESS = True
+CAPTURE_WIDTH = 640
+CAPTURE_HEIGHT = 480
+CAPTURE_FPS = 30
+PANEL_STATUS_INTERVAL_SECONDS = 0.20
+
+
+def configure_camera(camera) -> None:
+    """Request a predictable low-latency camera format when the backend allows it."""
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
+    camera.set(cv2.CAP_PROP_FPS, CAPTURE_FPS)
+    camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+
+class LatestFrameCapture:
+    """Continuously capture frames and expose only the newest available one."""
+
+    def __init__(self, camera) -> None:
+        self._camera = camera
+        self._condition = threading.Condition()
+        self._latest_frame = None
+        self._sequence = 0
+        self._delivered_sequence = 0
+        self._stopping = False
+        self._capture_failed = False
+        self._thread = threading.Thread(
+            target=self._capture_loop,
+            name="airdesk-camera",
+            daemon=True,
+        )
+
+    def start(self) -> "LatestFrameCapture":
+        self._thread.start()
+        return self
+
+    def _capture_loop(self) -> None:
+        while True:
+            with self._condition:
+                if self._stopping:
+                    return
+            received, frame = self._camera.read()
+            with self._condition:
+                if self._stopping:
+                    return
+                if not received:
+                    self._capture_failed = True
+                    self._condition.notify_all()
+                    return
+                self._latest_frame = frame
+                self._sequence += 1
+                self._condition.notify_all()
+
+    def read(self, timeout: float = 1.0):
+        """Wait for a newer frame; any older unprocessed frames are discarded."""
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while (
+                self._sequence <= self._delivered_sequence
+                and not self._capture_failed
+                and not self._stopping
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False, None
+                self._condition.wait(timeout=remaining)
+            if self._sequence <= self._delivered_sequence:
+                return False, None
+            self._delivered_sequence = self._sequence
+            return True, self._latest_frame
+
+    def release(self) -> None:
+        with self._condition:
+            self._stopping = True
+            self._condition.notify_all()
+        self._camera.release()
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+
+def limit_frame_resolution(frame):
+    """Downscale oversized frames while preserving their aspect ratio."""
+    frame_height, frame_width = frame.shape[:2]
+    scale = min(CAPTURE_WIDTH / frame_width, CAPTURE_HEIGHT / frame_height, 1.0)
+    if scale >= 1.0:
+        return frame
+    output_size = (
+        max(1, round(frame_width * scale)),
+        max(1, round(frame_height * scale)),
+    )
+    return cv2.resize(frame, output_size, interpolation=cv2.INTER_AREA)
 
 
 def resolve_hand_side(category_name: str, swap_handedness: bool) -> str | None:
@@ -182,6 +277,7 @@ def draw_status_panel(
     swap_handedness: bool,
     system_control_available: bool = False,
     system_control_active: bool = False,
+    control_panel_available: bool = False,
     left_action_status: str | None = None,
     right_action_status: str | None = None,
 ) -> None:
@@ -211,10 +307,7 @@ def draw_status_panel(
         (f"RIGHT: {right_status}{right_suffix}", lock_states["RIGHT"].locked),
         ("MODE: DESKTOP", False),
         (f"AIRDESK: {airdesk_status}", system_control_active),
-        (
-            f"HAND LABELS: {'SWAPPED' if swap_handedness else 'NORMAL'} (H: toggle)",
-            False,
-        ),
+        ("HAND LABELS: SWAPPED (FIXED)", False),
     )
     for row_index, (text, is_locked) in enumerate(rows):
         color = (0, 80, 255) if is_locked else (0, 255, 0)
@@ -229,9 +322,11 @@ def draw_status_panel(
             cv2.LINE_AA,
         )
 
-    controls = "Q: quit | H: hands"
+    controls = "Q: quit"
+    if control_panel_available:
+        controls += " | P: guide"
     if system_control_available:
-        controls = "Q: quit | H: hands | M: mouse | Esc: SAFE"
+        controls += " | M: mouse | Esc: SAFE"
     cv2.putText(
         frame,
         f"FPS: {fps:.1f} | {controls}",
@@ -267,40 +362,51 @@ def run_virtual_cursor(
     system_mouse=None,
     window_name: str = WINDOW_NAME,
     mode_controller=None,
+    control_panel=None,
 ) -> int:
     """Run Stage 4, optionally with the explicit Stage 5 mouse adapter."""
     if not MODEL_PATH.exists():
         print("The Hand Landmarker model is missing.")
         print("Run: python scripts/download_hand_model.py")
+        if control_panel is not None:
+            control_panel.close()
         return 1
 
-    camera = cv2.VideoCapture(CAMERA_INDEX)
-    if not camera.isOpened():
+    camera_device = cv2.VideoCapture(CAMERA_INDEX)
+    if not camera_device.isOpened():
         print(
             "AirDesk could not open the camera. Check macOS Camera permission "
             "for the app running Python, then try again."
         )
-        camera.release()
+        camera_device.release()
+        if control_panel is not None:
+            control_panel.close()
         return 1
+    configure_camera(camera_device)
+    camera = LatestFrameCapture(camera_device).start()
 
     lock_states = {"LEFT": HandLockState(), "RIGHT": HandLockState()}
     cursor_smoother = CursorSmoother()
-    swap_handedness = False
+    swap_handedness = DEFAULT_SWAP_HANDEDNESS
     start_time = time.perf_counter()
     previous_time = start_time
     previous_timestamp_ms = -1
     smoothed_fps = 0.0
     preview_window_open = False
+    last_panel_status_at = 0.0
+    last_frame_total_ms = 0.0
 
     try:
         with create_landmarker() as landmarker:
             while True:
+                frame_started_at = time.perf_counter()
                 frame_received, frame = camera.read()
                 if not frame_received:
                     print("AirDesk stopped because it could not read a camera frame.")
                     return 1
 
                 frame = cv2.flip(frame, 1)
+                frame = limit_frame_resolution(frame)
                 frame_height, frame_width = frame.shape[:2]
                 active_area = ActiveRectangle.from_frame(frame_width, frame_height)
 
@@ -386,7 +492,36 @@ def run_virtual_cursor(
                         if preview_window_open:
                             cv2.destroyWindow(window_name)
                             preview_window_open = False
-                        mode_controller.pump_overlay()
+                        if control_panel is not None:
+                            if (
+                                current_time - last_panel_status_at
+                                >= PANEL_STATUS_INTERVAL_SECONDS
+                            ):
+                                control_panel.update_status(
+                                    build_control_panel_status(
+                                        system_enabled=bool(
+                                            system_mouse is not None
+                                            and system_mouse.enabled
+                                        ),
+                                        paused=bool(
+                                            getattr(system_mouse, "paused", False)
+                                        ),
+                                        left_locked=lock_states["LEFT"].locked,
+                                        right_locked=lock_states["RIGHT"].locked,
+                                        cursor_visible=False,
+                                        left_action=None,
+                                        right_action=None,
+                                        fps=smoothed_fps,
+                                        processing_ms=last_frame_total_ms,
+                                    )
+                                )
+                                last_panel_status_at = current_time
+                            control_panel.pump()
+                        else:
+                            mode_controller.pump_overlay()
+                        last_frame_total_ms = (
+                            time.perf_counter() - frame_started_at
+                        ) * 1000.0
                         continue
 
                 for side, (_, landmarks, _) in observations.items():
@@ -429,7 +564,13 @@ def run_virtual_cursor(
                     )
 
                 if system_mouse is not None and hasattr(system_mouse, "update_gestures"):
-                    system_mouse.update_gestures(observations, lock_states, current_time)
+                    system_mouse.update_gestures(
+                        observations,
+                        lock_states,
+                        current_time,
+                        cursor_position=cursor_position,
+                        preview_size=(frame_width, frame_height),
+                    )
 
                 draw_active_area(
                     frame,
@@ -447,6 +588,7 @@ def run_virtual_cursor(
                     system_control_active=(
                         system_mouse is not None and system_mouse.enabled
                     ),
+                    control_panel_available=control_panel is not None,
                     left_action_status=(
                         getattr(system_mouse, "left_status", None)
                         if system_mouse is not None
@@ -497,25 +639,54 @@ def run_virtual_cursor(
                 if mode_controller is not None:
                     mode_controller.draw_desktop_overlay(frame)
 
+                if control_panel is not None:
+                    if (
+                        current_time - last_panel_status_at
+                        >= PANEL_STATUS_INTERVAL_SECONDS
+                    ):
+                        control_panel.update_status(
+                            build_control_panel_status(
+                                system_enabled=bool(
+                                    system_mouse is not None and system_mouse.enabled
+                                ),
+                                paused=bool(getattr(system_mouse, "paused", False)),
+                                left_locked=lock_states["LEFT"].locked,
+                                right_locked=lock_states["RIGHT"].locked,
+                                cursor_visible=cursor_position is not None,
+                                left_action=(
+                                    getattr(system_mouse, "left_status", None)
+                                    if system_mouse is not None
+                                    else None
+                                ),
+                                right_action=(
+                                    getattr(system_mouse, "right_status", None)
+                                    if system_mouse is not None
+                                    else None
+                                ),
+                                fps=smoothed_fps,
+                                processing_ms=last_frame_total_ms,
+                            )
+                        )
+                        last_panel_status_at = current_time
+                    control_panel.pump()
+
                 cv2.imshow(window_name, frame)
                 preview_window_open = True
                 key = cv2.waitKey(1) & 0xFF
+                last_frame_total_ms = (
+                    time.perf_counter() - frame_started_at
+                ) * 1000.0
                 if key in (ord("q"), ord("Q")):
                     break
                 if key == 27:
                     if system_mouse is not None:
                         system_mouse.disable("Esc pressed")
                     cursor_smoother.reset()
-                if key in (ord("h"), ord("H")):
-                    swap_handedness = not swap_handedness
-                    # Changing hand ownership is a safety boundary: relock both
-                    # sides and discard the old cursor before using the new map.
-                    lock_states = {"LEFT": HandLockState(), "RIGHT": HandLockState()}
-                    cursor_smoother.reset()
-                    if system_mouse is not None:
-                        system_mouse.disable("hand labels changed")
-                    mode = "SWAPPED" if swap_handedness else "NORMAL"
-                    print(f"Hand label correction: {mode}")
+                if (
+                    key in (ord("p"), ord("P"))
+                    and control_panel is not None
+                ):
+                    control_panel.toggle_visibility()
                 if key in (ord("m"), ord("M")) and system_mouse is not None:
                     system_mouse.toggle()
                     cursor_smoother.reset()
@@ -526,6 +697,8 @@ def run_virtual_cursor(
             mode_controller.close()
         if system_mouse is not None:
             system_mouse.close()
+        if control_panel is not None:
+            control_panel.close()
         camera.release()
         cv2.destroyAllWindows()
 

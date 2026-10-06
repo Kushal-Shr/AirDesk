@@ -165,8 +165,19 @@ class SwipeGestureDetector:
 class ShortcutControlController(DesktopControlController):
     """Add Stage 7 swipes to the Stage 6 click and scroll controller."""
 
-    def __init__(self, backend, escape_monitor) -> None:
-        super().__init__(backend, escape_monitor)
+    def __init__(
+        self,
+        backend,
+        escape_monitor,
+        feature_config=None,
+        command_palette=None,
+    ) -> None:
+        super().__init__(
+            backend,
+            escape_monitor,
+            feature_config=feature_config,
+            command_palette=command_palette,
+        )
         self.swipe_detector = SwipeGestureDetector()
 
     def reset_actions(self, require_release: bool = False) -> None:
@@ -174,11 +185,28 @@ class ShortcutControlController(DesktopControlController):
         if hasattr(self, "swipe_detector"):
             self.swipe_detector.reset(require_release=require_release)
 
-    def update_gestures(self, observations, lock_states, now: float) -> None:
-        super().update_gestures(observations, lock_states, now)
+    def update_gestures(
+        self,
+        observations,
+        lock_states,
+        now: float,
+        cursor_position=None,
+        preview_size=None,
+    ) -> None:
+        super().update_gestures(
+            observations,
+            lock_states,
+            now,
+            cursor_position=cursor_position,
+            preview_size=preview_size,
+        )
 
         right_observation = observations.get("RIGHT")
         if right_observation is None or lock_states["RIGHT"].locked:
+            self.swipe_detector.reset(require_release=True)
+            return
+
+        if self.right_status == "COMMAND":
             self.swipe_detector.reset(require_release=True)
             return
 
@@ -195,8 +223,14 @@ class ShortcutControlController(DesktopControlController):
             f"up={self.swipe_detector.last_upward:+.2f}"
         )
         if action is not None:
-            self.hotkey(*SHORTCUT_KEYS[action])
-            self._show_feedback(SWIPE_LABELS[action], now)
+            feature_key = (
+                "mission_control" if action == SWIPE_UP else "app_switching"
+            )
+            if self._feature_enabled(feature_key):
+                self.hotkey(*SHORTCUT_KEYS[action])
+                self._show_feedback(SWIPE_LABELS[action], now)
+            else:
+                self._show_feedback(f"{SWIPE_LABELS[action]} IS OFF", now)
 
 
 def main() -> int:
@@ -229,4 +263,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

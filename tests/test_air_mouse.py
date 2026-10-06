@@ -20,6 +20,8 @@ class FakeMouseBackend:
         self.scrolls = []
         self.hotkeys = []
         self.writes = []
+        self.button_events = []
+        self.double_clicks = []
         self.raise_fail_safe = False
 
     def size(self):
@@ -32,6 +34,15 @@ class FakeMouseBackend:
 
     def click(self, button, _pause):
         self.clicks.append((button, _pause))
+
+    def doubleClick(self, button, interval, _pause):
+        self.double_clicks.append((button, interval, _pause))
+
+    def mouseDown(self, button, _pause):
+        self.button_events.append(("down", button, _pause))
+
+    def mouseUp(self, button, _pause):
+        self.button_events.append(("up", button, _pause))
 
     def scroll(self, steps, _pause):
         self.scrolls.append((steps, _pause))
@@ -94,6 +105,18 @@ class SystemMouseControllerTests(unittest.TestCase):
     def test_explicit_disable_stops_output(self):
         self.controller.toggle()
         self.controller.disable("test")
+        self.assertFalse(self.controller.enabled)
+
+    def test_disable_releases_held_mouse_button(self):
+        self.controller.toggle()
+        self.assertTrue(self.controller.mouse_down("left"))
+
+        self.controller.disable("test")
+
+        self.assertEqual(
+            self.backend.button_events,
+            [("down", "left", False), ("up", "left", False)],
+        )
         self.assertFalse(self.controller.enabled)
 
     def test_click_and_scroll_require_active_control(self):

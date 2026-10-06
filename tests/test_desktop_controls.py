@@ -6,16 +6,25 @@ import unittest
 from types import SimpleNamespace
 
 from airdesk.desktop_controls import (
+    DOUBLE_CLICK_ACTION,
+    DRAG_END_ACTION,
+    DRAG_START_ACTION,
     LEFT_CLICK,
     NO_CLICK,
+    NO_PINCH,
+    PRIMARY_PINCH,
     RIGHT_CLICK,
+    SECONDARY_PINCH,
+    SINGLE_CLICK_ACTION,
     ClickGestureDetector,
     DesktopControlController,
+    PrimaryPinchDetector,
     ScrollGestureDetector,
     ScrollMetrics,
     classify_click_pose,
     classify_scroll_pose,
     measure_click_pose,
+    measure_desktop_pinch,
 )
 
 
@@ -45,6 +54,8 @@ class FakeBackend:
 
     def __init__(self):
         self.clicks = []
+        self.double_clicks = []
+        self.button_events = []
         self.scrolls = []
 
     def size(self):
@@ -55,6 +66,15 @@ class FakeBackend:
 
     def click(self, button, _pause):
         self.clicks.append((button, _pause))
+
+    def doubleClick(self, button, interval, _pause):
+        self.double_clicks.append((button, interval, _pause))
+
+    def mouseDown(self, button, _pause):
+        self.button_events.append(("down", button, _pause))
+
+    def mouseUp(self, button, _pause):
+        self.button_events.append(("up", button, _pause))
 
     def scroll(self, steps, _pause):
         self.scrolls.append((steps, _pause))
@@ -129,6 +149,120 @@ class ClickStateMachineTests(unittest.TestCase):
         detector.update(NO_CLICK, 2.12)
         detector.update(LEFT_CLICK, 2.20)
         self.assertEqual(detector.update(LEFT_CLICK, 2.51), LEFT_CLICK)
+
+
+class PinchGestureTests(unittest.TestCase):
+    @staticmethod
+    def primary_pinch_hand():
+        hand = make_hand(True, True, False, False)
+        hand[4] = SimpleNamespace(x=0.39, y=0.21, z=0.0)
+        return hand
+
+    @staticmethod
+    def secondary_pinch_hand():
+        hand = make_hand(True, True, False, False)
+        hand[4] = SimpleNamespace(x=0.43, y=0.21, z=0.0)
+        hand[8] = SimpleNamespace(x=0.42, y=0.20, z=0.0)
+        hand[12] = SimpleNamespace(x=0.44, y=0.20, z=0.0)
+        return hand
+
+    def test_normalized_pinch_pose_distinguishes_primary_and_secondary(self):
+        self.assertEqual(
+            measure_desktop_pinch(self.primary_pinch_hand()).pose,
+            PRIMARY_PINCH,
+        )
+        self.assertEqual(
+            measure_desktop_pinch(self.secondary_pinch_hand()).pose,
+            SECONDARY_PINCH,
+        )
+        self.assertEqual(measure_desktop_pinch(make_hand()).pose, NO_PINCH)
+
+    def test_one_quick_pinch_emits_single_click(self):
+        detector = PrimaryPinchDetector()
+        detector.update(True, 1.00, allow_double=False, allow_drag=True)
+        self.assertEqual(
+            detector.update(False, 1.15, allow_double=False, allow_drag=True),
+            SINGLE_CLICK_ACTION,
+        )
+
+    def test_two_quick_pinches_emit_one_double_click(self):
+        detector = PrimaryPinchDetector()
+        detector.update(True, 1.00, allow_double=True, allow_drag=True)
+        self.assertIsNone(
+            detector.update(False, 1.10, allow_double=True, allow_drag=True)
+        )
+        detector.update(True, 1.22, allow_double=True, allow_drag=True)
+        self.assertEqual(
+            detector.update(False, 1.32, allow_double=True, allow_drag=True),
+            DOUBLE_CLICK_ACTION,
+        )
+
+    def test_held_pinch_starts_drag_and_release_ends_it(self):
+        detector = PrimaryPinchDetector()
+        detector.update(True, 1.00, allow_double=True, allow_drag=True)
+        self.assertEqual(
+            detector.update(True, 1.53, allow_double=True, allow_drag=True),
+            DRAG_START_ACTION,
+        )
+        self.assertEqual(
+            detector.update(False, 1.60, allow_double=True, allow_drag=True),
+            DRAG_END_ACTION,
+        )
+
+    def test_controller_sends_one_native_double_click(self):
+        backend = FakeBackend()
+        controller = DesktopControlController(backend, FakeEscapeMonitor())
+        controller.toggle()
+        unlocked = SimpleNamespace(locked=False)
+        locked = SimpleNamespace(locked=True)
+        locks = {"LEFT": locked, "RIGHT": unlocked}
+        neutral = make_hand()
+        pinch = self.primary_pinch_hand()
+
+        controller.update_gestures({"RIGHT": (1.0, neutral, None)}, locks, 0.80)
+        controller.update_gestures({"RIGHT": (1.0, pinch, None)}, locks, 1.00)
+        controller.update_gestures({"RIGHT": (1.0, neutral, None)}, locks, 1.10)
+        controller.update_gestures({"RIGHT": (1.0, pinch, None)}, locks, 1.22)
+        controller.update_gestures({"RIGHT": (1.0, neutral, None)}, locks, 1.32)
+
+        self.assertEqual(backend.double_clicks, [("left", 0.12, False)])
+        self.assertEqual(backend.clicks, [])
+
+    def test_lock_releases_an_active_drag(self):
+        backend = FakeBackend()
+        controller = DesktopControlController(backend, FakeEscapeMonitor())
+        controller.toggle()
+        unlocked = SimpleNamespace(locked=False)
+        locked = SimpleNamespace(locked=True)
+        hand = self.primary_pinch_hand()
+
+        # Enabling ACTIVE requires one neutral frame before gestures rearm.
+        controller.update_gestures(
+            {"RIGHT": (1.0, make_hand(), None)},
+            {"LEFT": locked, "RIGHT": unlocked},
+            0.90,
+        )
+
+        controller.update_gestures(
+            {"RIGHT": (1.0, hand, None)},
+            {"LEFT": locked, "RIGHT": unlocked},
+            1.00,
+        )
+        controller.update_gestures(
+            {"RIGHT": (1.0, hand, None)},
+            {"LEFT": locked, "RIGHT": unlocked},
+            1.53,
+        )
+        controller.update_gestures(
+            {"RIGHT": (1.0, hand, None)},
+            {"LEFT": locked, "RIGHT": locked},
+            1.60,
+        )
+
+        self.assertEqual(
+            backend.button_events,
+            [("down", "left", False), ("up", "left", False)],
+        )
 
 
 class ScrollTests(unittest.TestCase):

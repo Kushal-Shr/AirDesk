@@ -2,16 +2,77 @@
 
 from __future__ import annotations
 
+import time
 import unittest
 from types import SimpleNamespace
 
+import numpy as np
+
 from airdesk.virtual_cursor import (
     ActiveRectangle,
+    CAPTURE_HEIGHT,
+    CAPTURE_WIDTH,
     CursorSmoother,
+    DEFAULT_SWAP_HANDEDNESS,
+    LatestFrameCapture,
     classify_index_point,
+    configure_camera,
+    limit_frame_resolution,
     map_to_preview,
     resolve_hand_side,
 )
+
+
+class FakeCamera:
+    def __init__(self, frames=None):
+        self.frames = list(frames or [])
+        self.set_calls = []
+        self.released = False
+
+    def set(self, property_id, value):
+        self.set_calls.append((property_id, value))
+        return True
+
+    def read(self):
+        if self.frames:
+            return True, self.frames.pop(0)
+        return False, None
+
+    def release(self):
+        self.released = True
+
+
+class CapturePerformanceTests(unittest.TestCase):
+    def test_camera_requests_bounded_capture_settings(self):
+        camera = FakeCamera()
+
+        configure_camera(camera)
+
+        values = [value for _property_id, value in camera.set_calls]
+        self.assertIn(CAPTURE_WIDTH, values)
+        self.assertIn(CAPTURE_HEIGHT, values)
+        self.assertIn(30, values)
+        self.assertIn(1, values)
+
+    def test_oversized_frame_is_downscaled_without_distortion(self):
+        large = np.zeros((720, 1280, 3), dtype=np.uint8)
+        small = np.zeros((240, 320, 3), dtype=np.uint8)
+
+        self.assertEqual(limit_frame_resolution(large).shape, (360, 640, 3))
+        self.assertIs(limit_frame_resolution(small), small)
+
+    def test_latest_frame_capture_drops_stale_frames(self):
+        frames = [np.full((2, 2, 3), value, dtype=np.uint8) for value in (1, 2, 3)]
+        camera = FakeCamera(frames)
+        capture = LatestFrameCapture(camera).start()
+        time.sleep(0.02)
+
+        received, frame = capture.read(timeout=0.1)
+        capture.release()
+
+        self.assertTrue(received)
+        self.assertEqual(int(frame[0, 0, 0]), 3)
+        self.assertTrue(camera.released)
 
 
 def make_pose(index_up: bool, other_fingers_up: bool, thumb_out: bool = False):
@@ -56,6 +117,9 @@ class PointingPoseTests(unittest.TestCase):
 
 
 class HandednessCorrectionTests(unittest.TestCase):
+    def test_application_starts_with_labels_reversed_for_this_camera(self):
+        self.assertTrue(DEFAULT_SWAP_HANDEDNESS)
+
     def test_normal_labels_are_unchanged(self):
         self.assertEqual(resolve_hand_side("Left", False), "LEFT")
         self.assertEqual(resolve_hand_side("Right", False), "RIGHT")
