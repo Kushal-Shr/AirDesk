@@ -25,6 +25,9 @@ airdesk/
 │       ├── desktop_controls.py
 │       ├── shortcut_config.py
 │       ├── system_shortcuts.py
+│       ├── feature_config.py
+│       ├── control_panel.py
+│       ├── command_palette.py
 │       ├── native_overlay.py
 │       ├── character_recognition.py
 │       ├── emnist_model.py
@@ -41,6 +44,9 @@ airdesk/
     ├── test_air_mouse.py
     ├── test_desktop_controls.py
     ├── test_system_shortcuts.py
+    ├── test_feature_config.py
+    ├── test_control_panel.py
+    ├── test_command_palette.py
     ├── test_character_recognition.py
     ├── test_personal_samples.py
     └── test_whiteboard.py
@@ -120,9 +126,9 @@ down. An open palm does not move the cursor. A left fist immediately hides it.
 The right hand never moves it.
 
 The labels refer to **your anatomical left and right hands**, not which side of
-the preview they occupy. If your camera reports them in reverse, press `H`; the
-status panel changes from `HAND LABELS: NORMAL` to `HAND LABELS: SWAPPED`.
-Changing this setting safely relocks both hands. Press `Q` to quit.
+the preview they occupy. AirDesk starts with the camera's handedness labels
+reversed to match this setup. That correction is fixed for every launch and
+cannot be accidentally toggled back. Press `Q` to quit.
 
 Run the mapping and smoothing tests with:
 
@@ -180,26 +186,30 @@ PYTHONPATH=src python -m airdesk.desktop_controls
 Real output begins in `SAFE PREVIEW`. Gesture feedback still appears there, so
 test recognition before pressing `M`:
 
-- Right index finger only, held briefly: left click
-- Right index + middle fingers, held briefly: right click
+- Quick right thumb–index pinch: left click
+- Two quick right thumb–index pinches: double click
+- Hold the right thumb–index pinch for about half a second: mouse-down for
+  drag, drop, or text selection; release the pinch for mouse-up
+- Right thumb touching both index and middle fingertips: right click
 - Left index + middle fingers extended, then move vertically: scroll
 
-Each click pose must dwell briefly, fires once per release, and has a cooldown.
-Scroll begins only after a short dwell and movement threshold. A fist or missing
-hand cancels that hand's gesture state. `Esc` disables all real output, `M`
-toggles it, `H` corrects hand labels, and `Q` quits.
+The controller uses normalized thumb/fingertip distance, so the pinch thresholds
+scale with the apparent size of the hand. A fist or missing right hand safely
+releases an active drag. `Esc`, leaving `ACTIVE`, quitting, or an output error
+also releases every held mouse button. Scroll begins only after a short dwell
+and movement threshold. `Esc` disables all real output, `M` toggles it, and `Q`
+quits. Handedness remains permanently swapped for this camera setup.
 
-The bottom diagnostic shows whether the right index, middle, ring, little, and
-thumb are interpreted as `UP` or `DOWN`, followed by the recognized click pose.
-Brief one-frame landmark dropouts are tolerated.
+The bottom diagnostic shows the normalized thumb-to-index and thumb-to-middle
+distances followed by the recognized pinch pose.
 
 Real pointer movement is applied before click recognition on each frame so a
 click uses the latest smoothed position. This is important for small targets
 such as macOS menu-bar icons.
 
-Click poses contain at least one extended finger, so they no longer conflict
-with closed-fist locking. Lower the extended finger or fingers after each click
-to re-arm the one-shot detector.
+For double-click detection, AirDesk briefly waits after the first quick pinch
+to determine whether a second pinch follows. This prevents a double click from
+also producing an unwanted single click.
 
 Run Stage 6 tests without system input:
 
@@ -277,6 +287,59 @@ Run the Stage 8 logic tests without camera or system output:
 
 ```bash
 PYTHONPATH=src python -m unittest tests/test_whiteboard.py -v
+```
+
+## Control panel and Air Command Palette
+
+The main Air Write launcher now opens a normal, clickable macOS utility panel
+alongside the existing camera/ink interface. It shows `SAFE PREVIEW`, `ACTIVE`,
+or `PAUSED`, both hand states, FPS, and estimated frame-processing time. Every
+available desktop control and palette command is listed with its gesture or
+keyboard action.
+
+The panel is a read-only gesture guide. It does not enable or disable anything;
+the controls are available automatically. Click **Hide** to dismiss it, then
+press `P` while the camera preview is active to show it again. The `M`/`Esc`
+safety controls remain authoritative.
+
+To use the Air Command Palette:
+
+1. Hold the unlocked right index, middle, ring, and little fingers open for
+   about 0.5 seconds.
+2. Move the left-hand pointer over a palette row.
+3. Use one right thumb–index pinch to select the highlighted row.
+4. Make a right fist or remove the right hand from view to cancel.
+
+The palette works in `SAFE PREVIEW` for visual testing, but it sends no keyboard
+shortcut until AirDesk is `ACTIVE`.
+
+### Responsiveness
+
+The integrated launcher requests a 640×480, 30 FPS camera stream and enforces a
+640×480 maximum inference size if the camera ignores that request. Camera input
+runs on a latest-frame-only capture thread, so slow inference drops stale frames
+instead of building visible delay. Native window events are pumped once per
+frame, while the gesture guide's live text refreshes at 5 Hz and performs no
+label updates while hidden. Its processing-time value now reports the previous
+complete frame, including native UI work.
+
+Run the integrated app from the project root:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m airdesk.air_writing
+```
+
+Before testing real OS control, grant the launcher (Terminal, Python, or VS
+Code) access in **System Settings → Privacy & Security → Accessibility**. The
+application still begins in `SAFE PREVIEW`; only press `M` when you deliberately
+want real mouse/keyboard output.
+
+Run the new platform-neutral tests without opening a camera or native window:
+
+```bash
+PYTHONPATH=src python -m unittest \
+  tests/test_control_panel.py tests/test_command_palette.py -v
 ```
 
 ## Run Stage 9

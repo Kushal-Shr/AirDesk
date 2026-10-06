@@ -9,6 +9,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .air_mouse import SystemMouseController
+from .air_mouse import map_preview_to_screen
+from .command_palette import PALETTE_COMMANDS
 from .hand_lock import FINGER_JOINTS, finger_is_curled, joint_angle_degrees
 from .virtual_cursor import run_virtual_cursor
 
@@ -29,6 +31,24 @@ SCROLL_DWELL_SECONDS = 0.18
 SCROLL_COOLDOWN_SECONDS = 0.10
 SCROLL_MOVEMENT_THRESHOLD = 0.18
 SCROLL_STEPS = 3
+
+PRIMARY_PINCH = "PRIMARY_PINCH"
+SECONDARY_PINCH = "SECONDARY_PINCH"
+NO_PINCH = "NONE"
+SINGLE_CLICK_ACTION = "SINGLE_CLICK"
+DOUBLE_CLICK_ACTION = "DOUBLE_CLICK"
+DRAG_START_ACTION = "DRAG_START"
+DRAG_END_ACTION = "DRAG_END"
+
+PRIMARY_PINCH_THRESHOLD = 0.34
+SECONDARY_PINCH_THRESHOLD = 0.20
+PRIMARY_MIDDLE_CLEARANCE = 0.24
+SECONDARY_PINCH_DWELL_SECONDS = 0.14
+DRAG_HOLD_SECONDS = 0.52
+QUICK_PINCH_MAX_SECONDS = 0.48
+DOUBLE_PINCH_INTERVAL_SECONDS = 0.48
+PALETTE_HOLD_SECONDS = 0.50
+PALETTE_SELECT_DWELL_SECONDS = 0.10
 
 
 def _landmark_points(landmarks) -> np.ndarray:
@@ -107,6 +127,155 @@ def measure_click_pose(landmarks) -> ClickMetrics:
 
 def classify_click_pose(landmarks) -> str:
     return measure_click_pose(landmarks).pose
+
+
+@dataclass(frozen=True)
+class DesktopPinchMetrics:
+    """Normalized right-hand measurements used for click and palette gestures."""
+
+    pose: str
+    thumb_index_distance: float
+    thumb_middle_distance: float
+    four_fingers_extended: bool
+
+
+def measure_desktop_pinch(landmarks) -> DesktopPinchMetrics:
+    points = _landmark_points(landmarks)
+    wrist = points[0]
+    palm_size = max(float(np.linalg.norm(points[9] - wrist)), 1e-6)
+    thumb_index = float(np.linalg.norm(points[4] - points[8]) / palm_size)
+    thumb_middle = float(np.linalg.norm(points[4] - points[12]) / palm_size)
+    four_extended = all(
+        finger_is_extended(points, wrist, *finger_joints)
+        for finger_joints in FINGER_JOINTS
+    )
+
+    if (
+        thumb_index < SECONDARY_PINCH_THRESHOLD
+        and thumb_middle < SECONDARY_PINCH_THRESHOLD
+    ):
+        pose = SECONDARY_PINCH
+    elif (
+        thumb_index < PRIMARY_PINCH_THRESHOLD
+        and thumb_middle > PRIMARY_MIDDLE_CLEARANCE
+    ):
+        pose = PRIMARY_PINCH
+    else:
+        pose = NO_PINCH
+    return DesktopPinchMetrics(pose, thumb_index, thumb_middle, four_extended)
+
+
+@dataclass
+class PrimaryPinchDetector:
+    """Distinguish one pinch, two pinches, and a held drag without ambiguity."""
+
+    pinching: bool = False
+    pinch_started_at: float | None = None
+    dragging: bool = False
+    first_click_at: float | None = None
+    blocked_until_release: bool = False
+
+    def reset(self, require_release: bool = False) -> None:
+        self.pinching = False
+        self.pinch_started_at = None
+        self.dragging = False
+        self.first_click_at = None
+        self.blocked_until_release = require_release
+
+    def update(
+        self,
+        is_pinching: bool,
+        now: float,
+        *,
+        allow_double: bool,
+        allow_drag: bool,
+    ) -> str | None:
+        if self.blocked_until_release:
+            if not is_pinching:
+                self.blocked_until_release = False
+            return None
+
+        if is_pinching:
+            if not self.pinching:
+                self.pinching = True
+                self.pinch_started_at = now
+                if (
+                    self.first_click_at is not None
+                    and now - self.first_click_at > DOUBLE_PINCH_INTERVAL_SECONDS
+                ):
+                    self.first_click_at = None
+                    return SINGLE_CLICK_ACTION
+                return None
+            if (
+                allow_drag
+                and not self.dragging
+                and self.pinch_started_at is not None
+                and now - self.pinch_started_at >= DRAG_HOLD_SECONDS
+            ):
+                self.dragging = True
+                self.first_click_at = None
+                return DRAG_START_ACTION
+            return None
+
+        if self.pinching:
+            duration = now - (self.pinch_started_at or now)
+            self.pinching = False
+            self.pinch_started_at = None
+            if self.dragging:
+                self.dragging = False
+                return DRAG_END_ACTION
+            if duration <= QUICK_PINCH_MAX_SECONDS:
+                if not allow_double:
+                    return SINGLE_CLICK_ACTION
+                if (
+                    self.first_click_at is not None
+                    and now - self.first_click_at <= DOUBLE_PINCH_INTERVAL_SECONDS
+                ):
+                    self.first_click_at = None
+                    return DOUBLE_CLICK_ACTION
+                self.first_click_at = now
+
+        if (
+            self.first_click_at is not None
+            and now - self.first_click_at > DOUBLE_PINCH_INTERVAL_SECONDS
+        ):
+            self.first_click_at = None
+            return SINGLE_CLICK_ACTION
+        return None
+
+
+@dataclass
+class DwellLatch:
+    """Fire once after a pose dwell and require a release before rearming."""
+
+    dwell_seconds: float
+    started_at: float | None = None
+    latched: bool = False
+    blocked_until_release: bool = False
+
+    def reset(self, require_release: bool = False) -> None:
+        self.started_at = None
+        self.latched = False
+        self.blocked_until_release = require_release
+
+    def update(self, active: bool, now: float) -> bool:
+        if self.blocked_until_release:
+            if not active:
+                self.blocked_until_release = False
+            return False
+        if not active:
+            self.started_at = None
+            self.latched = False
+            return False
+        if self.latched:
+            return False
+        if self.started_at is None:
+            self.started_at = now
+            return False
+        if now - self.started_at < self.dwell_seconds:
+            return False
+        self.latched = True
+        return True
 
 
 @dataclass
@@ -354,12 +523,23 @@ class MacEscapeMonitor:
 
 
 class DesktopControlController(SystemMouseController):
-    """Combine safe PyAutoGUI output with Stage 6 gesture state machines."""
+    """Combine safe output, pinch gestures, scrolling, and command selection."""
 
-    def __init__(self, backend, escape_monitor) -> None:
+    def __init__(
+        self,
+        backend,
+        escape_monitor,
+        feature_config=None,
+        command_palette=None,
+    ) -> None:
         super().__init__(backend)
         self.escape_monitor = escape_monitor
-        self.click_detector = ClickGestureDetector()
+        self.feature_config = feature_config
+        self.command_palette = command_palette
+        self.primary_pinch_detector = PrimaryPinchDetector()
+        self.secondary_pinch_detector = DwellLatch(SECONDARY_PINCH_DWELL_SECONDS)
+        self.palette_open_detector = DwellLatch(PALETTE_HOLD_SECONDS)
+        self.palette_select_detector = DwellLatch(PALETTE_SELECT_DWELL_SECONDS)
         self.scroll_detector = ScrollGestureDetector()
         self.left_status = None
         self.right_status = None
@@ -379,55 +559,208 @@ class DesktopControlController(SystemMouseController):
         self._feedback_until = now + 0.8
         print(self._feedback_text)
 
+    def _feature_enabled(self, key: str) -> bool:
+        if self.feature_config is None:
+            return True
+        return self.feature_config.get(key)
+
+    def _enabled_palette_keys(self) -> set[str]:
+        return {
+            command.key
+            for command in PALETTE_COMMANDS
+            if self._feature_enabled(command.key)
+        }
+
+    def _close_palette(self) -> None:
+        if self.command_palette is not None:
+            self.command_palette.hide()
+        self.palette_select_detector.reset(require_release=True)
+
+    def _release_drag(self) -> None:
+        self.mouse_up("left")
+        self.primary_pinch_detector.dragging = False
+
     def reset_actions(self, require_release: bool = False) -> None:
-        if hasattr(self, "click_detector"):
-            self.click_detector.reset(require_release=require_release)
+        if hasattr(self, "primary_pinch_detector"):
+            self._release_drag()
+            self.primary_pinch_detector.reset(require_release=require_release)
+            self.secondary_pinch_detector.reset(require_release=require_release)
+            self.palette_open_detector.reset(require_release=require_release)
+            self.palette_select_detector.reset(require_release=require_release)
             self.scroll_detector.reset(require_release=require_release)
+            self._close_palette()
             self.left_status = None
             self.right_status = None
 
-    def update_gestures(self, observations, lock_states, now: float) -> None:
+    def _update_palette(
+        self,
+        metrics: DesktopPinchMetrics,
+        now: float,
+        cursor_position: tuple[int, int] | None,
+        preview_size: tuple[int, int] | None,
+    ) -> bool:
+        if self.command_palette is None:
+            return False
+
+        if self.command_palette.visible:
+            if not self._feature_enabled("air_command_palette"):
+                self._close_palette()
+                return False
+            enabled_keys = self._enabled_palette_keys()
+            self.command_palette.update_enabled(enabled_keys)
+            screen_point = None
+            if cursor_position is not None and preview_size is not None:
+                screen_point = map_preview_to_screen(
+                    cursor_position,
+                    preview_size,
+                    self.screen_size,
+                )
+            highlighted = self.command_palette.hit_test(screen_point)
+            self.command_palette.highlight(highlighted)
+            selected = self.palette_select_detector.update(
+                metrics.pose == PRIMARY_PINCH,
+                now,
+            )
+            self.right_status = "COMMAND"
+            if selected and highlighted is not None:
+                command = PALETTE_COMMANDS[highlighted]
+                if command.key not in enabled_keys:
+                    self._show_feedback(f"{command.label.upper()} IS OFF", now)
+                else:
+                    self.hotkey(*command.shortcut)
+                    self._show_feedback(command.label.upper(), now)
+                    self._close_palette()
+                    self.primary_pinch_detector.reset(require_release=True)
+            return True
+
+        four_finger_pose = metrics.four_fingers_extended and metrics.pose == NO_PINCH
+        if not self._feature_enabled("air_command_palette"):
+            self.palette_open_detector.reset()
+            return False
+        if self.palette_open_detector.update(four_finger_pose, now):
+            self.primary_pinch_detector.reset(require_release=False)
+            self.secondary_pinch_detector.reset(require_release=False)
+            self.palette_select_detector.reset(require_release=False)
+            self.command_palette.show(self._enabled_palette_keys())
+            self.right_status = "COMMAND"
+            self._show_feedback("COMMAND PALETTE", now)
+            return True
+        return four_finger_pose
+
+    def _update_right_hand(
+        self,
+        observations,
+        lock_states,
+        now: float,
+        cursor_position: tuple[int, int] | None,
+        preview_size: tuple[int, int] | None,
+    ) -> None:
+        right_observation = observations.get("RIGHT")
+        if right_observation is None or lock_states["RIGHT"].locked:
+            self._release_drag()
+            self.primary_pinch_detector.reset(require_release=True)
+            self.secondary_pinch_detector.reset(require_release=True)
+            self.palette_open_detector.reset(require_release=True)
+            self._close_palette()
+            self.right_status = None
+            self.diagnostic_text = (
+                "RIGHT: hand not seen"
+                if right_observation is None
+                else "RIGHT: LOCKED - open hand to rearm"
+            )
+            return
+
+        metrics = measure_desktop_pinch(right_observation[1])
+        if self._update_palette(
+            metrics,
+            now,
+            cursor_position,
+            preview_size,
+        ):
+            self.diagnostic_text = "RIGHT COMMAND: use left pointer, right pinch selects"
+            return
+
+        drag_enabled = self._feature_enabled("drag_selection")
+        if self.primary_pinch_detector.dragging and not drag_enabled:
+            self._release_drag()
+            self.primary_pinch_detector.reset(require_release=True)
+
+        if metrics.pose == SECONDARY_PINCH:
+            if self.primary_pinch_detector.dragging:
+                self._release_drag()
+            self.primary_pinch_detector.reset(require_release=True)
+            self.right_status = "CLICK"
+            if self.secondary_pinch_detector.update(True, now):
+                if self._feature_enabled("right_click"):
+                    self.click("right")
+                    self._show_feedback("RIGHT CLICK", now)
+                else:
+                    self._show_feedback("RIGHT CLICK IS OFF", now)
+        else:
+            self.secondary_pinch_detector.update(False, now)
+            action = self.primary_pinch_detector.update(
+                metrics.pose == PRIMARY_PINCH,
+                now,
+                allow_double=self._feature_enabled("double_click"),
+                allow_drag=drag_enabled,
+            )
+            if self.primary_pinch_detector.dragging:
+                self.right_status = "DRAG"
+            elif metrics.pose == PRIMARY_PINCH:
+                self.right_status = "CLICK"
+            else:
+                self.right_status = None
+
+            if action == SINGLE_CLICK_ACTION:
+                if self._feature_enabled("left_click"):
+                    self.click("left")
+                    self._show_feedback("LEFT CLICK", now)
+                else:
+                    self._show_feedback("LEFT CLICK IS OFF", now)
+            elif action == DOUBLE_CLICK_ACTION:
+                if self._feature_enabled("double_click"):
+                    self.double_click("left")
+                    self._show_feedback("DOUBLE CLICK", now)
+            elif action == DRAG_START_ACTION:
+                self.mouse_down("left")
+                self._show_feedback("DRAG START", now)
+            elif action == DRAG_END_ACTION:
+                self.mouse_up("left")
+                self._show_feedback("DRAG END", now)
+
+        self.diagnostic_text = (
+            "RIGHT PINCH "
+            f"index={metrics.thumb_index_distance:.2f} "
+            f"middle={metrics.thumb_middle_distance:.2f} | "
+            f"{metrics.pose.replace('_', ' ')}"
+        )
+
+    def update_gestures(
+        self,
+        observations,
+        lock_states,
+        now: float,
+        cursor_position: tuple[int, int] | None = None,
+        preview_size: tuple[int, int] | None = None,
+    ) -> None:
         if self.escape_monitor.consume_escape():
             self.disable("global Esc pressed")
             self._show_feedback("SAFE - ESC", now)
 
-        right_observation = observations.get("RIGHT")
-        if right_observation is None or lock_states["RIGHT"].locked:
-            self.click_detector.reset(require_release=True)
-            self.right_status = None
-            if right_observation is None:
-                self.diagnostic_text = "RIGHT CLICK: hand not seen"
-            else:
-                locked_metrics = measure_click_pose(right_observation[1])
-                self.diagnostic_text = (
-                    "RIGHT CLICK: LOCKED - open first | "
-                    f"index={'UP' if locked_metrics.index_extended else 'DOWN'} "
-                    f"middle={'UP' if locked_metrics.middle_extended else 'DOWN'}"
-                )
-        else:
-            click_metrics = measure_click_pose(right_observation[1])
-            click_pose = click_metrics.pose
-            self.right_status = "CLICK" if click_pose != NO_CLICK else None
-            pose_name = click_pose.replace("_", " ")
-            self.diagnostic_text = (
-                "RIGHT POSE "
-                f"index={'UP' if click_metrics.index_extended else 'DOWN'} "
-                f"middle={'UP' if click_metrics.middle_extended else 'DOWN'} "
-                f"ring={'DOWN' if click_metrics.ring_curled else 'UP'} "
-                f"little={'DOWN' if click_metrics.little_curled else 'UP'} "
-                f"thumb={'DOWN' if click_metrics.thumb_folded else 'UP'} "
-                f"| {pose_name}"
-            )
-            click_action = self.click_detector.update(click_pose, now)
-            if click_action == LEFT_CLICK:
-                self.click("left")
-                self._show_feedback("LEFT CLICK", now)
-            elif click_action == RIGHT_CLICK:
-                self.click("right")
-                self._show_feedback("RIGHT CLICK", now)
+        self._update_right_hand(
+            observations,
+            lock_states,
+            now,
+            cursor_position,
+            preview_size,
+        )
 
         left_observation = observations.get("LEFT")
-        if left_observation is None or lock_states["LEFT"].locked:
+        if (
+            left_observation is None
+            or lock_states["LEFT"].locked
+            or not self._feature_enabled("scroll")
+        ):
             self.scroll_detector.reset(require_release=True)
             self.left_status = None
         else:
@@ -441,6 +774,8 @@ class DesktopControlController(SystemMouseController):
 
     def close(self) -> None:
         super().close()
+        if self.command_palette is not None:
+            self.command_palette.close()
         self.escape_monitor.close()
 
 

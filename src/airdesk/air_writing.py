@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .command_palette import NativeCommandPalette
+from .control_panel import NativeControlPanel
 from .desktop_controls import MacEscapeMonitor
 from .gemini_correction import GeminiCorrectionClient
 from .native_overlay import NativeInkOverlay
@@ -23,6 +25,8 @@ def main() -> int:
     load_dotenv(PROJECT_ROOT / ".env", override=False)
     escape_monitor = MacEscapeMonitor()
     overlay = None
+    control_panel = None
+    command_palette = None
     try:
         recognizer = SegmentedCharacterRecognizer()
         recognizer.verify_ready()
@@ -38,12 +42,22 @@ def main() -> int:
                 "Accessibility permission and restart it"
             )
         escape_monitor.start()
-        system_controller = ShortcutControlController(pyautogui, escape_monitor)
         overlay = NativeInkOverlay()
+        command_palette = NativeCommandPalette()
+        control_panel = NativeControlPanel()
+        system_controller = ShortcutControlController(
+            pyautogui,
+            escape_monitor,
+            command_palette=command_palette,
+        )
     except Exception as error:
         escape_monitor.close()
         if overlay is not None:
             overlay.close()
+        if control_panel is not None:
+            control_panel.close()
+        if command_palette is not None:
+            command_palette.close()
         print(f"AirDesk could not start Air Write mode: {error}")
         return 1
 
@@ -71,6 +85,7 @@ def main() -> int:
             recognizer,
             gemini_reviewer=gemini_reviewer,
         ),
+        control_panel=control_panel,
     )
 
 

@@ -10,3 +10,7 @@ captures/
 models/
 data/
 personal_data/
+
+# Local control-panel choices (created at runtime)
+airdesk_features.json
+airdesk_features.json.tmp

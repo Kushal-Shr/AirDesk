@@ -48,14 +48,18 @@ class SystemMouseController:
             raise RuntimeError(
                 "macOS did not provide a usable screen size; mouse control was not started"
             )
+        self._held_buttons: set[str] = set()
 
     def toggle(self) -> None:
+        if self.enabled:
+            self.release_all_buttons()
         self.reset_actions(require_release=not self.enabled)
         self.enabled = not self.enabled
         state = "ACTIVE" if self.enabled else "SAFE PREVIEW"
         print(f"Real mouse control: {state}")
 
     def disable(self, reason: str) -> None:
+        self.release_all_buttons()
         self.reset_actions(require_release=True)
         if self.enabled:
             self.enabled = False
@@ -97,6 +101,44 @@ class SystemMouseController:
         return self._handle_output_error(
             lambda: self.backend.click(button=button, _pause=False)
         )
+
+    def double_click(self, button: str = "left") -> bool:
+        if not self.enabled:
+            return False
+        return self._handle_output_error(
+            lambda: self.backend.doubleClick(
+                button=button,
+                interval=0.12,
+                _pause=False,
+            )
+        )
+
+    def mouse_down(self, button: str = "left") -> bool:
+        if not self.enabled or button in self._held_buttons:
+            return False
+        succeeded = self._handle_output_error(
+            lambda: self.backend.mouseDown(button=button, _pause=False)
+        )
+        if succeeded:
+            self._held_buttons.add(button)
+        return succeeded
+
+    def mouse_up(self, button: str = "left") -> bool:
+        if button not in self._held_buttons:
+            return False
+        try:
+            self.backend.mouseUp(button=button, _pause=False)
+        except Exception as error:
+            self._held_buttons.discard(button)
+            self.enabled = False
+            print(f"Real mouse control: SAFE PREVIEW (button release failed: {error})")
+            return False
+        self._held_buttons.discard(button)
+        return True
+
+    def release_all_buttons(self) -> None:
+        for button in tuple(self._held_buttons):
+            self.mouse_up(button)
 
     def scroll(self, steps: int) -> bool:
         if not self.enabled:
