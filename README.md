@@ -3,11 +3,9 @@
 AirDesk is a beginner-friendly macOS computer-vision project. It will grow
 stage by stage into a gesture-controlled desktop interface with air-writing.
 
-This repository currently contains **Stage 9: One-Character Recognition**.
-AirDesk draws through a click-through desktop overlay, recognizes one uppercase
-letter with an EMNIST-trained neural network, and types it only after a
-thumbs-up hold. Personal Training Mode can now collect labeled uppercase,
-lowercase, and symbol samples for the next fine-tuning stage.
+AirDesk now draws through a click-through desktop overlay, splits a complete
+mixed handwriting line into characters, classifies each character independently,
+and inserts the joined result after a three-second no-ink pause.
 
 ## Planned project layout
 
@@ -252,10 +250,12 @@ PYTHONPATH=src python -m airdesk.air_writing
 
 Air-writing controls:
 
-- Right thumb–index pinch held: pen down and draw
-- Release the right pinch: pen up
-- Cyan ring: current right index-fingertip aim position
-- Filled orange dot: pinch is active and the pen is drawing
+- Tight right thumb–index pinch with the middle, ring, and little fingers at
+  least 80% open: pen down and draw
+- Release the pinch or curl any of those three fingers: pen up
+- Cyan ring: smoothed right index-fingertip aim position, visible even while
+  the pen is up
+- Filled orange dot: the complete writing pose is active and the pen is drawing
 - Close the right fist: immediately lift the pen
 - Left open palm held for one second: clear the canvas
 - Both open palms held for one second: hide the ink and return to Desktop Mode
@@ -370,19 +370,116 @@ out EMNIST test. A model that misses either accuracy threshold is saved only as
 `airdesk_<mode>.pt` name. Detailed accuracy and confusion results are written
 to `models/personal_training_report.json`.
 
-Run live AirDesk with exactly one validated recognition mode selected:
+Run live AirDesk with whole-line mixed recognition:
 
 ```bash
-PYTHONPATH=src python -m airdesk.air_writing --recognition-mode uppercase
-PYTHONPATH=src python -m airdesk.air_writing --recognition-mode lowercase
-PYTHONPATH=src python -m airdesk.air_writing --recognition-mode digits
-PYTHONPATH=src python -m airdesk.air_writing --recognition-mode symbols
+PYTHONPATH=src python -m airdesk.air_writing
 ```
 
-The launcher refuses checkpoints that did not pass validation. Symbol mode
-shows a fixed writing guide because punctuation position distinguishes pairs
-such as `.`/`,` and `-`/`_`. Draw symbols inside that guide. The other modes
-crop and center the character automatically.
+The launcher refuses a line checkpoint that did not pass validation. Write all
+character types together; there is no character-mode switch.
+
+## Segmented mixed-character recognition
+
+The merged character trainer uses the mapped uppercase, lowercase, and symbol
+images plus local EMNIST letters and digits:
+
+```bash
+PYTHONPATH=src python scripts/train_merged_characters.py
+```
+
+At runtime, vertical projection finds blank columns between characters. Each
+resulting region is resized to 28×28 and passed independently through the merged
+83-class CNN. Large horizontal gaps become spaces. There is no word prediction,
+sentence prediction, dictionary correction, or language model.
+
+Digits use EMNIST until personal digit samples exist. To personalize them, run
+the digit collector and retrain the merged classifier:
+
+```bash
+PYTHONPATH=src python -m airdesk.collect_samples --group digits --samples-per-character 3
+PYTHONPATH=src python scripts/train_merged_characters.py
+```
+
+Write a complete
+mixed sentence from left to right inside the horizontal guide, lifting the
+pinch between strokes and words as needed. After three seconds without new ink,
+AirDesk recognizes and inserts the complete line into the previously selected
+text field. No per-character thumbs-up or character-mode switching is used.
+Hold the left palm open to clear before submission; `Esc` blocks automatic
+insertion immediately. Automatic insertion requires at least 90% mean character
+confidence; a lower-confidence result is previewed but not typed. The status
+line shows the normalized pinch distance and the least-open of the three
+non-writing fingers so the strict pose can be adjusted in real time.
+
+To undo the most recent stroke, make a left thumb–index pinch while keeping the
+middle, ring, and little fingers up. Hold it for 0.65 seconds. A pinched hand is
+excluded from open-palm detection, so this pose cannot accidentally clear the
+line or trigger the two-palm mode switch.
+Undo removes one complete pen-down-to-pen-up stroke, rebuilds the recognition
+canvas, and fires only once until the pose is released.
+
+### Improving the merged model
+
+`--samples-per-character` is a cumulative target. If a class already has three
+samples, using a target of eight collects five new examples rather than starting
+over. Collect each group separately so every class gets balanced coverage:
+
+```bash
+PYTHONPATH=src python -m airdesk.collect_samples --group uppercase --samples-per-character 8
+PYTHONPATH=src python -m airdesk.collect_samples --group lowercase --samples-per-character 8
+PYTHONPATH=src python -m airdesk.collect_samples --group digits --samples-per-character 8
+PYTHONPATH=src python -m airdesk.collect_samples --group symbols --samples-per-character 8
+```
+
+Make the examples genuinely different: vary size, slant, starting position,
+stroke speed, and lighting while keeping each character legible. Then retrain
+from the complete cumulative dataset and review the report:
+
+```bash
+PYTHONPATH=src python scripts/train_merged_characters.py --epochs 8
+cat models/merged_character_report.json
+```
+
+Add extra examples for repeatedly confused shapes before increasing epochs.
+More varied data usually improves live recognition more reliably than repeatedly
+training on the same small sample set.
+
+### Optional Gemini low-confidence review
+
+AirDesk can send only the cropped black-and-white ink canvas to Gemini when the
+local merged model scores a line below 90%. The request also includes the local
+text and its three strongest candidates for each segmented character. Camera
+frames, desktop screenshots, and the selected text field are never included.
+
+Install the optional SDK, create a Gemini API key, and place it in the ignored
+project `.env` file:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+```dotenv
+GEMINI_API_KEY="your-key-here"
+GEMINI_MODEL="gemini-3.8-flash"
+GEMINI_FALLBACK_MODEL="gemini-3.5-flash-lite"
+```
+
+Then launch AirDesk normally:
+
+```bash
+PYTHONPATH=src python -m airdesk.air_writing
+```
+
+Shell environment variables still take precedence over `.env` values.
+`GEMINI_MODEL` can optionally select another compatible model; the default is
+`gemini-3.8-flash`. Capacity errors (`429` or `503`) automatically retry once
+with `GEMINI_FALLBACK_MODEL`. Never commit an API key to the repository. Gemini
+corrections at 90% confidence or higher are inserted into the previously
+focused text field; lower-confidence results remain labeled `PREVIEW ONLY`.
+High-confidence local results continue to use the existing automatic insertion.
+If the key, network, SDK, or Gemini service is unavailable, local recognition
+continues normally.
 
 ## Requirements
 

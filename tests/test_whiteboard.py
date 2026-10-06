@@ -9,12 +9,19 @@ import numpy as np
 
 from airdesk.native_overlay import MemoryInkOverlay
 from airdesk.character_recognition import RecognitionResult
+from airdesk.gemini_correction import GeminiCorrectionResult
 from airdesk.whiteboard import (
+    AdaptivePointSmoother,
     AirWritingController,
     HoldLatch,
+    SentenceBuffer,
+    WholeLineWritingController,
     is_open_palm,
     is_pen_pinch,
+    is_stroke_undo_pose,
+    is_mode_switch_pose,
     is_thumbs_up,
+    measure_pen_pose,
 )
 
 
@@ -57,6 +64,18 @@ def make_thumbs_up_hand():
     return points
 
 
+def make_mode_switch_hand():
+    points = make_hand(open_palm=False)
+    for dip_id, tip_id in ((7, 8), (11, 12)):
+        points[dip_id] = SimpleNamespace(x=points[dip_id].x, y=0.35, z=0.0)
+        points[tip_id] = SimpleNamespace(x=points[tip_id].x, y=0.20, z=0.0)
+    return points
+
+
+def make_stroke_undo_hand():
+    return make_hand(open_palm=True, pinched=True)
+
+
 class FakeSystemController:
     def __init__(self):
         self.enabled = True
@@ -93,18 +112,71 @@ class FakeSymbolRecognizer(FakeRecognizer):
         return self.result
 
 
+class FakeMultiModeRecognizer(FakeRecognizer):
+    modes = ("uppercase", "lowercase", "digits", "symbols")
+
+    def __init__(self, mode="digits"):
+        super().__init__()
+        self.mode = mode
+
+    @property
+    def preserves_position(self):
+        return self.mode == "symbols"
+
+    def cycle_mode(self):
+        index = self.modes.index(self.mode)
+        self.mode = self.modes[(index + 1) % len(self.modes)]
+        return self.mode
+
+
+class FakeLineRecognizer:
+    def __init__(self, text="Hi 2!", confidence=0.94):
+        self.result = RecognitionResult(text, confidence)
+        self.calls = 0
+
+    def recognize(self, _canvas):
+        self.calls += 1
+        return self.result
+
+
+class FakeGeminiReviewer:
+    def __init__(self, text="Hello 2!", confidence=0.96):
+        self.result = GeminiCorrectionResult(text, confidence, "visual correction")
+        self.calls = []
+
+    def review(self, canvas, local_text, predictions):
+        self.calls.append((canvas.copy(), local_text, predictions))
+        return self.result
+
+
 class PoseTests(unittest.TestCase):
     def test_open_palm_requires_extended_fingers(self):
         self.assertTrue(is_open_palm(make_hand(open_palm=True)))
         self.assertFalse(is_open_palm(make_hand(open_palm=False)))
+        self.assertFalse(is_open_palm(make_hand(open_palm=True, pinched=True)))
 
-    def test_pen_pinch_uses_thumb_and_index(self):
+    def test_pen_pinch_requires_tight_pinch_and_open_other_fingers(self):
         self.assertTrue(is_pen_pinch(make_hand(open_palm=True, pinched=True)))
         self.assertFalse(is_pen_pinch(make_hand(open_palm=True, pinched=False)))
+        self.assertFalse(is_pen_pinch(make_hand(open_palm=False, pinched=True)))
+
+        metrics = measure_pen_pose(make_hand(open_palm=True, pinched=True))
+        self.assertGreaterEqual(metrics.minimum_other_openness, 0.80)
 
     def test_thumbs_up_requires_raised_thumb_and_curled_fingers(self):
         self.assertTrue(is_thumbs_up(make_thumbs_up_hand()))
         self.assertFalse(is_thumbs_up(make_hand(open_palm=True)))
+
+    def test_mode_switch_requires_index_and_middle_only(self):
+        self.assertTrue(is_mode_switch_pose(make_mode_switch_hand()))
+        self.assertFalse(is_mode_switch_pose(make_hand(open_palm=True)))
+        self.assertFalse(is_mode_switch_pose(make_hand(open_palm=False)))
+
+    def test_stroke_undo_pose_is_distinct_from_palm_and_fist(self):
+        pose = make_stroke_undo_hand()
+        self.assertTrue(is_stroke_undo_pose(pose))
+        self.assertFalse(is_open_palm(pose))
+        self.assertFalse(is_stroke_undo_pose(make_hand(open_palm=True)))
 
 
 class HoldLatchTests(unittest.TestCase):
@@ -126,6 +198,35 @@ class HoldLatchTests(unittest.TestCase):
         hold.update(False, 1.6)
         self.assertGreaterEqual(hold.progress, 0.5)
         self.assertTrue(hold.update(True, 2.01))
+
+
+class AdaptivePointSmootherTests(unittest.TestCase):
+    def test_small_movements_are_smoothed_and_reset_starts_fresh(self):
+        smoother = AdaptivePointSmoother()
+        self.assertEqual(smoother.update((100, 100)), (100, 100))
+        smoothed = smoother.update((110, 100))
+        self.assertGreater(smoothed[0], 100)
+        self.assertLess(smoothed[0], 110)
+
+        smoother.reset()
+        self.assertEqual(smoother.update((300, 200)), (300, 200))
+
+
+class SentenceBufferTests(unittest.TestCase):
+    def test_character_space_and_undo(self):
+        sentence = SentenceBuffer(maximum_length=5)
+        self.assertFalse(sentence.append_space())
+        self.assertTrue(sentence.append_character("h"))
+        self.assertTrue(sentence.append_character("i"))
+        self.assertTrue(sentence.append_space())
+        self.assertFalse(sentence.append_space())
+        self.assertTrue(sentence.undo())
+        self.assertEqual(sentence.text, "hi")
+
+    def test_length_limit_keeps_existing_text(self):
+        sentence = SentenceBuffer(text="hello", maximum_length=5)
+        self.assertFalse(sentence.append_character("!"))
+        self.assertEqual(sentence.text, "hello")
 
 
 class AirWritingControllerTests(unittest.TestCase):
@@ -250,6 +351,24 @@ class AirWritingControllerTests(unittest.TestCase):
         self.controller.update({}, self.unlocked, 1.1, 640, 480, self.system)
         self.assertIsNone(self.overlay.cursor_point)
 
+    def test_pinch_with_curled_other_fingers_is_aim_only(self):
+        self.controller.mode = "AIR_WRITE"
+        invalid_writing_pose = make_hand(open_palm=False, pinched=True)
+
+        self.controller.update(
+            {"RIGHT": (1.0, invalid_writing_pose, None)},
+            self.unlocked,
+            1.0,
+            640,
+            480,
+            self.system,
+        )
+
+        self.assertIsNotNone(self.overlay.cursor_point)
+        self.assertFalse(self.overlay.cursor_active)
+        self.assertFalse(self.controller.pen_down)
+        self.assertEqual(self.overlay.strokes, [])
+
     def test_left_open_palm_clears_after_hold(self):
         self.controller.mode = "AIR_WRITE"
         self.controller.ensure_canvas(640, 480)
@@ -266,7 +385,7 @@ class AirWritingControllerTests(unittest.TestCase):
         self.assertTrue(np.all(self.controller.canvas == 255))
         self.assertEqual(self.overlay.strokes, [])
 
-    def test_thumbs_up_recognizes_types_and_clears_one_character(self):
+    def test_right_thumb_buffers_character_then_both_thumbs_insert(self):
         self.controller.mode = "AIR_WRITE"
         self.controller.ensure_canvas(640, 480)
         self.controller.canvas[200:260, 300:306] = 0
@@ -281,33 +400,65 @@ class AirWritingControllerTests(unittest.TestCase):
         )
 
         self.assertEqual(self.recognizer.calls, 1)
-        self.assertEqual(self.system.committed_text, ["A"])
+        self.assertEqual(self.system.committed_text, [])
+        self.assertEqual(self.controller.sentence.text, "A")
         self.assertTrue(np.all(self.controller.canvas == 255))
         self.assertEqual(self.overlay.strokes, [])
-        self.assertIn("INSERTED: A", self.controller.recognition_feedback)
+        self.assertIn("ADDED: A", self.controller.recognition_feedback)
+
+        both_thumbs = {
+            "LEFT": (1.0, make_thumbs_up_hand(), None),
+            "RIGHT": (1.0, make_thumbs_up_hand(), None),
+        }
+        self.controller.update(
+            both_thumbs, self.unlocked, 3.0, 640, 480, self.system
+        )
+        self.controller.update(
+            both_thumbs, self.unlocked, 3.91, 640, 480, self.system
+        )
+        self.assertEqual(self.system.committed_text, ["A"])
+        self.assertEqual(self.controller.sentence.text, "")
 
         # A held confirmation cannot type the same character repeatedly.
         self.controller.update(
-            thumbs_up, self.unlocked, 2.5, 640, 480, self.system
+            both_thumbs, self.unlocked, 4.5, 640, 480, self.system
         )
         self.assertEqual(self.system.committed_text, ["A"])
+
+    def test_left_thumb_adds_space_and_left_pinch_undoes(self):
+        self.controller.mode = "AIR_WRITE"
+        self.controller.sentence.text = "HI"
+        left_thumb = {"LEFT": (1.0, make_thumbs_up_hand(), None)}
+        self.controller.update(left_thumb, self.unlocked, 1.0, 640, 480, self.system)
+        self.controller.update(left_thumb, self.unlocked, 1.66, 640, 480, self.system)
+        self.assertEqual(self.controller.sentence.text, "HI ")
+
+        self.controller.update({}, self.unlocked, 2.0, 640, 480, self.system)
+        left_pinch = {"LEFT": (1.0, make_hand(open_palm=False, pinched=True), None)}
+        self.controller.update(left_pinch, self.unlocked, 2.3, 640, 480, self.system)
+        self.controller.update(left_pinch, self.unlocked, 2.96, 640, 480, self.system)
+        self.assertEqual(self.controller.sentence.text, "HI")
 
     def test_escape_safety_blocks_confirmed_text(self):
         self.controller.mode = "AIR_WRITE"
         self.controller.ensure_canvas(640, 480)
-        self.controller.canvas[200:260, 300:306] = 0
+        self.controller.sentence.text = "SAFE"
         self.controller.emergency_stop()
-        thumbs_up = {"RIGHT": (1.0, make_thumbs_up_hand(), None)}
+        both_thumbs = {
+            "LEFT": (1.0, make_thumbs_up_hand(), None),
+            "RIGHT": (1.0, make_thumbs_up_hand(), None),
+        }
 
         self.controller.update(
-            thumbs_up, self.unlocked, 1.0, 640, 480, self.system
+            both_thumbs, self.unlocked, 1.0, 640, 480, self.system
         )
         self.controller.update(
-            thumbs_up, self.unlocked, 1.66, 640, 480, self.system
+            both_thumbs, self.unlocked, 1.91, 640, 480, self.system
         )
 
         self.assertEqual(self.recognizer.calls, 0)
         self.assertEqual(self.system.committed_text, [])
+        self.assertEqual(self.controller.sentence.text, "SAFE")
         self.assertIn("STOPPED BY ESC", self.controller.recognition_feedback)
 
     def test_symbol_mode_uses_position_preserving_strokes(self):
@@ -321,9 +472,215 @@ class AirWritingControllerTests(unittest.TestCase):
         controller.update(thumbs_up, self.unlocked, 1.0, 640, 480, self.system)
         controller.update(thumbs_up, self.unlocked, 1.66, 640, 480, self.system)
 
-        self.assertEqual(self.system.committed_text, ["."])
+        self.assertEqual(self.system.committed_text, [])
+        self.assertEqual(controller.sentence.text, ".")
         self.assertEqual(recognizer.calls, 1)
         self.assertIsNotNone(recognizer.received_guide)
+
+    def test_left_two_finger_hold_cycles_mode_and_preserves_sentence(self):
+        recognizer = FakeMultiModeRecognizer(mode="digits")
+        controller = AirWritingController(self.overlay, recognizer)
+        controller.mode = "AIR_WRITE"
+        controller.sentence.text = "Room 2"
+        controller.ensure_canvas(640, 480)
+        controller.canvas[200:220, 300:305] = 0
+        self.overlay.add_point((500, 300))
+        mode_pose = {"LEFT": (1.0, make_mode_switch_hand(), None)}
+
+        controller.update(mode_pose, self.unlocked, 1.0, 640, 480, self.system)
+        controller.update(mode_pose, self.unlocked, 1.81, 640, 480, self.system)
+
+        self.assertEqual(controller.recognition_mode, "symbols")
+        self.assertEqual(controller.sentence.text, "Room 2")
+        self.assertIsNotNone(controller.writing_guide)
+        self.assertIsNotNone(self.overlay.guide)
+        self.assertTrue(np.all(controller.canvas == 255))
+
+        # Holding the pose cannot skip repeatedly; release is required.
+        controller.update(mode_pose, self.unlocked, 2.8, 640, 480, self.system)
+        self.assertEqual(controller.recognition_mode, "symbols")
+        controller.update({}, self.unlocked, 3.1, 640, 480, self.system)
+        controller.update(mode_pose, self.unlocked, 3.4, 640, 480, self.system)
+        controller.update(mode_pose, self.unlocked, 4.21, 640, 480, self.system)
+        self.assertEqual(controller.recognition_mode, "uppercase")
+        self.assertIsNone(controller.writing_guide)
+        self.assertIsNone(self.overlay.guide)
+
+
+class WholeLineWritingControllerTests(unittest.TestCase):
+    def setUp(self):
+        self.overlay = MemoryInkOverlay(size=(1280, 800))
+        self.recognizer = FakeLineRecognizer()
+        self.controller = WholeLineWritingController(
+            self.overlay, self.recognizer, idle_seconds=3.0
+        )
+        self.controller.mode = "AIR_WRITE"
+        self.system = FakeSystemController()
+        self.unlocked = {
+            "LEFT": SimpleNamespace(locked=False),
+            "RIGHT": SimpleNamespace(locked=False),
+        }
+
+    def test_complete_line_is_inserted_once_after_idle_timeout(self):
+        first = make_hand(open_palm=True, pinched=True)
+        second = make_hand(open_palm=True, pinched=True, dx=0.05)
+        self.controller.update(
+            {"RIGHT": (1.0, first, None)}, self.unlocked, 1.0, 640, 480, self.system
+        )
+        self.controller.update(
+            {"RIGHT": (1.0, second, None)}, self.unlocked, 1.1, 640, 480, self.system
+        )
+        self.controller.update({}, self.unlocked, 3.9, 640, 480, self.system)
+        self.assertEqual(self.system.committed_text, [])
+        self.controller.update({}, self.unlocked, 4.11, 640, 480, self.system)
+
+        self.assertEqual(self.recognizer.calls, 1)
+        self.assertEqual(self.system.committed_text, ["Hi 2!"])
+        self.assertEqual(self.overlay.preview, "Hi 2!")
+        self.assertTrue(np.all(self.controller.canvas == 255))
+        self.assertFalse(self.controller.has_line_ink)
+
+        self.controller.update({}, self.unlocked, 8.0, 640, 480, self.system)
+        self.assertEqual(self.system.committed_text, ["Hi 2!"])
+
+    def test_left_undo_hold_removes_only_the_latest_stroke(self):
+        first = make_hand(open_palm=True, pinched=True)
+        first_end = make_hand(open_palm=True, pinched=True, dx=0.02)
+        second = make_hand(open_palm=True, pinched=True, dx=0.12)
+        second_end = make_hand(open_palm=True, pinched=True, dx=0.14)
+        released = make_hand(open_palm=True, pinched=False)
+
+        for timestamp, hand in (
+            (1.0, first),
+            (1.1, first_end),
+            (1.2, released),
+            (1.3, second),
+            (1.4, second_end),
+            (1.5, released),
+        ):
+            self.controller.update(
+                {"RIGHT": (1.0, hand, None)},
+                self.unlocked,
+                timestamp,
+                640,
+                480,
+                self.system,
+            )
+
+        undo = {"LEFT": (1.0, make_stroke_undo_hand(), None)}
+        self.controller.update(undo, self.unlocked, 1.6, 640, 480, self.system)
+        self.controller.update(undo, self.unlocked, 2.26, 640, 480, self.system)
+
+        retained_strokes = [stroke for stroke in self.overlay.strokes if stroke]
+        self.assertEqual(len(retained_strokes), 1)
+        self.assertEqual(len(self.controller.canvas_strokes), 1)
+        self.assertTrue(np.any(self.controller.canvas < 255))
+        self.assertTrue(self.controller.has_line_ink)
+        self.assertIn("LAST STROKE UNDONE", self.controller.recognition_feedback)
+
+        # Holding the same pose cannot remove another stroke until it is released.
+        self.controller.update(undo, self.unlocked, 3.0, 640, 480, self.system)
+        self.assertEqual(len(self.controller.canvas_strokes), 1)
+
+    def test_escape_blocks_automatic_insertion_and_keeps_line(self):
+        self.controller.ensure_canvas(640, 480)
+        self.controller.canvas[200:260, 200:500] = 0
+        self.controller.has_line_ink = True
+        self.controller.last_ink_at = 1.0
+        self.controller.emergency_stop()
+        self.controller.update({}, self.unlocked, 4.1, 640, 480, self.system)
+
+        self.assertEqual(self.recognizer.calls, 0)
+        self.assertEqual(self.system.committed_text, [])
+        self.assertTrue(np.any(self.controller.canvas < 255))
+        self.assertIn("BLOCKED BY ESC", self.controller.recognition_feedback)
+
+    def test_low_confidence_line_is_previewed_but_not_inserted(self):
+        self.controller.recognizer = FakeLineRecognizer("Hi C!", confidence=0.78)
+        self.controller.ensure_canvas(640, 480)
+        self.controller.canvas[200:260, 200:500] = 0
+        self.controller.has_line_ink = True
+        self.controller.last_ink_at = 1.0
+        self.controller.update({}, self.unlocked, 4.1, 640, 480, self.system)
+
+        self.assertEqual(self.system.committed_text, [])
+        self.assertEqual(self.overlay.preview, "Hi C!")
+        self.assertTrue(np.any(self.controller.canvas < 255))
+        self.assertIn("LOW CONFIDENCE", self.controller.recognition_feedback)
+
+    def test_high_confidence_gemini_correction_is_inserted(self):
+        reviewer = FakeGeminiReviewer("Hi C!", confidence=0.95)
+        controller = WholeLineWritingController(
+            self.overlay,
+            FakeLineRecognizer("Hi c!", confidence=0.72),
+            idle_seconds=3.0,
+            gemini_reviewer=reviewer,
+        )
+        controller.mode = "AIR_WRITE"
+        controller.ensure_canvas(640, 480)
+        controller.canvas[200:260, 200:500] = 0
+        controller.has_line_ink = True
+        controller.last_ink_at = 1.0
+
+        controller.update({}, self.unlocked, 4.1, 640, 480, self.system)
+        controller._gemini_future.result(timeout=1.0)
+        controller._poll_gemini_review(self.system)
+
+        self.assertEqual(self.system.committed_text, ["Hi C!"])
+        self.assertEqual(self.overlay.preview, "Hi C!")
+        self.assertEqual(len(reviewer.calls), 1)
+        self.assertIn("CORRECTED AND INSERTED", controller.recognition_feedback)
+        self.assertFalse(controller.has_line_ink)
+        self.assertTrue(np.all(controller.canvas == 255))
+        controller.close()
+
+    def test_low_confidence_gemini_result_remains_preview_only(self):
+        reviewer = FakeGeminiReviewer("Hi C!", confidence=0.72)
+        controller = WholeLineWritingController(
+            self.overlay,
+            FakeLineRecognizer("Hi c!", confidence=0.70),
+            idle_seconds=3.0,
+            gemini_reviewer=reviewer,
+        )
+        controller.mode = "AIR_WRITE"
+        controller.ensure_canvas(640, 480)
+        controller.canvas[200:260, 200:500] = 0
+        controller.has_line_ink = True
+        controller.last_ink_at = 1.0
+
+        controller.update({}, self.unlocked, 4.1, 640, 480, self.system)
+        controller._gemini_future.result(timeout=1.0)
+        controller._poll_gemini_review(self.system)
+
+        self.assertEqual(self.system.committed_text, [])
+        self.assertEqual(self.overlay.preview, "Hi C!")
+        self.assertIn("PREVIEW ONLY", controller.recognition_feedback)
+        self.assertTrue(controller.has_line_ink)
+        controller.close()
+
+    def test_escape_blocks_completed_gemini_insertion(self):
+        reviewer = FakeGeminiReviewer("Hi C!", confidence=0.98)
+        controller = WholeLineWritingController(
+            self.overlay,
+            FakeLineRecognizer("Hi c!", confidence=0.70),
+            idle_seconds=3.0,
+            gemini_reviewer=reviewer,
+        )
+        controller.mode = "AIR_WRITE"
+        controller.ensure_canvas(640, 480)
+        controller.canvas[200:260, 200:500] = 0
+        controller.has_line_ink = True
+        controller.last_ink_at = 1.0
+
+        controller.update({}, self.unlocked, 4.1, 640, 480, self.system)
+        controller._gemini_future.result(timeout=1.0)
+        controller.emergency_stop()
+        controller._poll_gemini_review(self.system)
+
+        self.assertEqual(self.system.committed_text, [])
+        self.assertTrue(controller.has_line_ink)
+        self.assertIn("BLOCKED BY ESC", controller.recognition_feedback)
+        controller.close()
 
 
 if __name__ == "__main__":
