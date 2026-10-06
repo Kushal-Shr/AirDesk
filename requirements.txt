@@ -10,3 +10,10 @@ numpy>=1.26,<3
 # Optional macOS mouse/keyboard output (introduced in Stage 5)
 PyAutoGUI>=0.9.54,<0.10
 
+# Transparent, non-activating macOS ink overlay (introduced in Stage 8)
+pyobjc-framework-Cocoa>=10,<13; sys_platform == "darwin"
+
+# EMNIST handwriting training and one-character inference (Stage 9)
+torch>=2.8,<3
+torchvision>=0.23,<1
+certifi>=2025.1

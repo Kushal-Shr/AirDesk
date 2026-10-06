@@ -33,6 +33,14 @@ def make_index_point_landmarks():
     return points
 
 
+def make_thumbs_up_landmarks():
+    points = make_landmarks(closed=True)
+    points[2] = SimpleNamespace(x=0.43, y=0.66, z=0.0)
+    points[3] = SimpleNamespace(x=0.43, y=0.45, z=0.0)
+    points[4] = SimpleNamespace(x=0.43, y=0.18, z=0.0)
+    return points
+
+
 class FistClassifierTests(unittest.TestCase):
     def test_open_hand_is_not_a_fist(self):
         self.assertFalse(classify_fist(make_landmarks(closed=False)).is_closed)
@@ -42,6 +50,9 @@ class FistClassifierTests(unittest.TestCase):
 
     def test_index_point_is_not_a_fist(self):
         self.assertFalse(classify_fist(make_index_point_landmarks()).is_closed)
+
+    def test_thumbs_up_is_not_a_fist(self):
+        self.assertFalse(classify_fist(make_thumbs_up_landmarks()).is_closed)
 
 
 class HandLockStateTests(unittest.TestCase):

@@ -88,6 +88,20 @@ def finger_is_curled(
     return bool(joint_angle < 125.0 or tip_to_wrist < pip_to_wrist * 1.08)
 
 
+def thumb_is_raised(points: np.ndarray) -> bool:
+    """Detect a straight thumb pointing upward, independent of hand side."""
+    wrist = points[0]
+    palm_size = max(float(np.linalg.norm(points[9] - wrist)), 1e-6)
+    thumb_angle = joint_angle_degrees(points[2], points[3], points[4])
+    thumb_vector = points[4] - points[2]
+    upward = float(-thumb_vector[1])
+    return bool(
+        thumb_angle > 145.0
+        and upward > palm_size * 0.75
+        and upward > abs(float(thumb_vector[0])) * 1.25
+    )
+
+
 def classify_fist(landmarks) -> FistMetrics:
     """Classify a fist using scale-independent finger curl and compactness."""
     points = np.array(
@@ -113,7 +127,13 @@ def classify_fist(landmarks) -> FistMetrics:
 
     # Requiring all four fingers prevents an index-point pose from becoming a fist.
     # The 0.25-second unlock delay absorbs brief landmark misses on a real fist.
-    is_closed = curled_fingers == 4 and compactness < 1.35
+    # A raised thumb makes this an intentional thumbs-up, not a closed-fist
+    # safety lock. All other compact four-finger poses remain locked.
+    is_closed = (
+        curled_fingers == 4
+        and compactness < 1.35
+        and not thumb_is_raised(points)
+    )
     return FistMetrics(is_closed, curled_fingers, compactness)
 
 

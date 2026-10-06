@@ -19,6 +19,7 @@ class FakeMouseBackend:
         self.clicks = []
         self.scrolls = []
         self.hotkeys = []
+        self.writes = []
         self.raise_fail_safe = False
 
     def size(self):
@@ -37,6 +38,9 @@ class FakeMouseBackend:
 
     def hotkey(self, *keys, _pause):
         self.hotkeys.append((keys, _pause))
+
+    def write(self, text, interval, _pause):
+        self.writes.append((text, interval, _pause))
 
 
 class InvalidScreenBackend(FakeMouseBackend):
@@ -103,6 +107,12 @@ class SystemMouseControllerTests(unittest.TestCase):
         self.assertEqual(self.backend.clicks, [("right", False)])
         self.assertEqual(self.backend.scrolls, [(-3, False)])
         self.assertEqual(self.backend.hotkeys, [(('command', 'tab'), False)])
+
+    def test_confirmed_text_commit_is_separate_from_mouse_toggle(self):
+        self.assertFalse(self.controller.enabled)
+        self.assertFalse(self.controller.commit_text(""))
+        self.assertTrue(self.controller.commit_text("A"))
+        self.assertEqual(self.backend.writes, [("A", 0.0, False)])
 
 
 if __name__ == "__main__":

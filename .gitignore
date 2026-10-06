@@ -6,4 +6,4 @@ __pycache__/
 # Files AirDesk may generate in later stages.
 captures/
 models/
-
+data/

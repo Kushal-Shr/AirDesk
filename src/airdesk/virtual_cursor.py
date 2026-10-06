@@ -263,7 +263,11 @@ def draw_virtual_cursor(
     cv2.circle(frame, cursor_position, 10, (255, 255, 0), -1, cv2.LINE_AA)
 
 
-def run_virtual_cursor(system_mouse=None, window_name: str = WINDOW_NAME) -> int:
+def run_virtual_cursor(
+    system_mouse=None,
+    window_name: str = WINDOW_NAME,
+    mode_controller=None,
+) -> int:
     """Run Stage 4, optionally with the explicit Stage 5 mouse adapter."""
     if not MODEL_PATH.exists():
         print("The Hand Landmarker model is missing.")
@@ -286,6 +290,7 @@ def run_virtual_cursor(system_mouse=None, window_name: str = WINDOW_NAME) -> int
     previous_time = start_time
     previous_timestamp_ms = -1
     smoothed_fps = 0.0
+    preview_window_open = False
 
     try:
         with create_landmarker() as landmarker:
@@ -346,6 +351,43 @@ def run_virtual_cursor(system_mouse=None, window_name: str = WINDOW_NAME) -> int
                     else:
                         _, _, metrics = observation
                         state.update(metrics.is_closed, True, current_time)
+
+                if mode_controller is not None:
+                    was_overlay_active = getattr(
+                        mode_controller,
+                        "is_overlay_active",
+                        mode_controller.is_whiteboard,
+                    )
+                    escape_monitor = getattr(system_mouse, "escape_monitor", None)
+                    if (
+                        was_overlay_active
+                        and escape_monitor is not None
+                        and escape_monitor.consume_escape()
+                    ):
+                        system_mouse.disable("global Esc pressed")
+                        mode_controller.emergency_stop()
+                    mode_controller.update(
+                        observations,
+                        lock_states,
+                        current_time,
+                        frame_width,
+                        frame_height,
+                        system_mouse,
+                        all_hands=result.hand_landmarks,
+                    )
+                    overlay_active = getattr(
+                        mode_controller,
+                        "is_overlay_active",
+                        mode_controller.is_whiteboard,
+                    )
+                    if overlay_active:
+                        # The preview must disappear so the already-focused app
+                        # remains visible beneath the non-activating overlay.
+                        if preview_window_open:
+                            cv2.destroyWindow(window_name)
+                            preview_window_open = False
+                        mode_controller.pump_overlay()
+                        continue
 
                 for side, (_, landmarks, _) in observations.items():
                     text_row = 205 if side == "LEFT" else 235
@@ -452,7 +494,11 @@ def run_virtual_cursor(system_mouse=None, window_name: str = WINDOW_NAME) -> int
                         cv2.LINE_AA,
                     )
 
+                if mode_controller is not None:
+                    mode_controller.draw_desktop_overlay(frame)
+
                 cv2.imshow(window_name, frame)
+                preview_window_open = True
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), ord("Q")):
                     break
@@ -476,6 +522,8 @@ def run_virtual_cursor(system_mouse=None, window_name: str = WINDOW_NAME) -> int
                 if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                     break
     finally:
+        if mode_controller is not None:
+            mode_controller.close()
         if system_mouse is not None:
             system_mouse.close()
         camera.release()

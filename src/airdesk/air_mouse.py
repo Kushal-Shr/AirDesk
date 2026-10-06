@@ -112,6 +112,14 @@ class SystemMouseController:
             lambda: self.backend.hotkey(*keys, _pause=False)
         )
 
+    def commit_text(self, text: str) -> bool:
+        """Type text only after an explicit Air Write confirmation gesture."""
+        if not text:
+            return False
+        return self._handle_output_error(
+            lambda: self.backend.write(text, interval=0.0, _pause=False)
+        )
+
 
 def main() -> int:
     try:

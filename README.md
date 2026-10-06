@@ -1,13 +1,12 @@
 # AirDesk
 
 AirDesk is a beginner-friendly macOS computer-vision project. It will grow
-stage by stage into a gesture-controlled desktop interface and an air-writing
-whiteboard.
+stage by stage into a gesture-controlled desktop interface with air-writing.
 
-This repository currently contains **Stage 7: three-finger system shortcuts**.
-The unlocked right hand can perform directional three-finger swipes in addition
-to Stage 6 clicks, while the left hand retains pointer and scroll control. Real
-output starts disabled every time and must be deliberately enabled with `M`.
+This repository currently contains **Stage 9: One-Character Recognition**.
+AirDesk draws through a click-through desktop overlay, recognizes one uppercase
+letter with an EMNIST-trained neural network, and types it only after a
+thumbs-up hold.
 
 ## Planned project layout
 
@@ -26,7 +25,11 @@ airdesk/
 │       ├── air_mouse.py
 │       ├── desktop_controls.py
 │       ├── shortcut_config.py
-│       └── system_shortcuts.py
+│       ├── system_shortcuts.py
+│       ├── native_overlay.py
+│       ├── character_recognition.py
+│       ├── air_writing.py
+│       └── whiteboard.py
 ├── scripts/
 │   └── download_hand_model.py
 └── tests/
@@ -35,7 +38,9 @@ airdesk/
     ├── test_virtual_cursor.py
     ├── test_air_mouse.py
     ├── test_desktop_controls.py
-    └── test_system_shortcuts.py
+    ├── test_system_shortcuts.py
+    ├── test_character_recognition.py
+    └── test_whiteboard.py
 ```
 
 Application modules will be added under `src/airdesk/` only when their build
@@ -227,6 +232,83 @@ Run Stage 7 tests without sending shortcuts:
 
 ```bash
 PYTHONPATH=src python -m unittest tests/test_system_shortcuts.py -v
+```
+
+## Run Stage 8
+
+Stage 8 starts in Desktop Mode with real output off. First use AirDesk to select
+the text field where recognized writing should eventually be inserted. Then hold
+both open palms for one second to show a transparent ink layer over the desktop:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m airdesk.air_writing
+```
+
+Air-writing controls:
+
+- Right thumb–index pinch held: pen down and draw
+- Release the right pinch: pen up
+- Close the right fist: immediately lift the pen
+- Left open palm held for one second: clear the canvas
+- Both open palms held for one second: hide the ink and return to Desktop Mode
+
+The OpenCV camera preview hides while Air Write mode is active. The native macOS
+overlay does not accept clicks and cannot become the active window, so the app
+and text field selected beforehand should retain keyboard focus. Real system
+output stays off; returning to Desktop Mode does not restore it automatically.
+Press `M` deliberately if needed. Use `Ctrl+C` in the launching terminal to quit
+while the camera preview is hidden.
+
+Mode switching counts any two detected palms with all four non-thumb fingers
+extended; it does not depend on MediaPipe's left/right labels or thumb angle.
+The overlay shows `OPEN PALMS: 0/2`, `1/2`, or `2/2`, and brief tracking
+dropouts do not restart the full hold timer. The visible strokes are also kept
+on an off-screen black-and-white canvas so the next stage can recognize them.
+
+Run the Stage 8 logic tests without camera or system output:
+
+```bash
+PYTHONPATH=src python -m unittest tests/test_whiteboard.py -v
+```
+
+## Run Stage 9
+
+Stage 9 adds on-device OCR and deliberate text insertion to the same launcher.
+It is intentionally limited to one clearly drawn uppercase letter:
+
+1. In Desktop Mode, select the destination text field.
+2. Hold both open palms to enter Air Write mode.
+3. Draw one character with the right thumb–index pinch.
+4. Release the pinch, then hold a right-hand thumbs-up for about 0.65 seconds.
+5. AirDesk recognizes the character and types it into the focused field.
+
+The overlay reports `INSERTED`, `NOT RECOGNIZED`, or an OCR/Accessibility
+error. A successful insertion clears the ink so the next character can be
+drawn. The thumbs-up fires only once and must be released before another
+character can be accepted. This is not digit, full-word, or sentence
+recognition yet.
+
+The included model was trained on 124,800 EMNIST letter images with rotation,
+translation, scale, and shear augmentation. Its held-out EMNIST accuracy was
+93.57%. To reproduce the model training from the downloaded dataset, run:
+
+```bash
+PYTHONPATH=src python scripts/train_emnist_letters.py
+```
+
+Install the machine-learning dependencies and run the latest stage with:
+
+```bash
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+PYTHONPATH=src python -m airdesk.air_writing
+```
+
+Run the recognition and gesture tests without typing into another app:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
 ## Requirements
