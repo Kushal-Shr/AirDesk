@@ -134,7 +134,7 @@ class PersonalSampleController(AirWritingController):
     """Replace text insertion with labeled sample capture on thumbs-up."""
 
     def __init__(self, overlay, store: PersonalSampleStore) -> None:
-        super().__init__(overlay=overlay)
+        super().__init__(overlay=overlay, sentence_mode=False)
         self.store = store
         self.guide = make_writing_guide(overlay.size, store.current_label or "✓")
         self.overlay.set_guide(self.guide)

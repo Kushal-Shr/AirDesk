@@ -11,6 +11,7 @@ class MemoryInkOverlay:
         self.strokes: list[list[tuple[int, int]]] = []
         self.visible = False
         self.status = ""
+        self.preview = ""
         self.guide = None
         self.cursor_point = None
         self.cursor_active = False
@@ -36,8 +37,22 @@ class MemoryInkOverlay:
     def clear(self) -> None:
         self.strokes.clear()
 
+    def undo_last_stroke(self) -> bool:
+        """Remove the newest completed stroke while preserving stroke separation."""
+        while self.strokes and not self.strokes[-1]:
+            self.strokes.pop()
+        if not self.strokes:
+            return False
+        self.strokes.pop()
+        if self.strokes:
+            self.strokes.append([])
+        return True
+
     def set_status(self, text: str) -> None:
         self.status = text
+
+    def set_preview(self, text: str) -> None:
+        self.preview = text
 
     def set_guide(self, guide) -> None:
         self.guide = guide
@@ -108,6 +123,7 @@ class NativeInkOverlay:
                     return None
                 view_self.ink_strokes = []
                 view_self.status_text = ""
+                view_self.preview_text = ""
                 view_self.writing_guide = None
                 view_self.pen_cursor = None
                 return view_self
@@ -209,6 +225,24 @@ class NativeInkOverlay:
                     kit["NSMakePoint"](32, height - 50), attributes
                 )
 
+                preview_panel = kit["NSBezierPath"].bezierPathWithRoundedRect_xRadius_yRadius_(
+                    kit["NSMakeRect"](16, height - 126, min(width - 32, 1100), 48),
+                    12,
+                    12,
+                )
+                kit["NSColor"].colorWithCalibratedRed_green_blue_alpha_(
+                    0.05, 0.16, 0.28, 0.82
+                ).setFill()
+                preview_panel.fill()
+                preview_attributes = {
+                    kit["NSFontAttributeName"]: kit["NSFont"].boldSystemFontOfSize_(20.0),
+                    kit["NSForegroundColorAttributeName"]: kit["NSColor"].whiteColor(),
+                }
+                preview = view_self.preview_text or "(sentence preview is empty)"
+                kit["NSString"].stringWithString_(f"TEXT: {preview}").drawAtPoint_withAttributes_(
+                    kit["NSMakePoint"](32, height - 112), preview_attributes
+                )
+
         class NonActivatingPanel(NSPanel):
             def canBecomeKeyWindow(panel_self):
                 return False
@@ -271,8 +305,24 @@ class NativeInkOverlay:
         self.strokes.clear()
         self._view.setNeedsDisplay_(True)
 
+    def undo_last_stroke(self) -> bool:
+        """Remove the newest completed stroke and redraw the native overlay."""
+        while self.strokes and not self.strokes[-1]:
+            self.strokes.pop()
+        if not self.strokes:
+            return False
+        self.strokes.pop()
+        if self.strokes:
+            self.strokes.append([])
+        self._view.setNeedsDisplay_(True)
+        return True
+
     def set_status(self, text: str) -> None:
         self._view.status_text = text
+        self._view.setNeedsDisplay_(True)
+
+    def set_preview(self, text: str) -> None:
+        self._view.preview_text = text
         self._view.setNeedsDisplay_(True)
 
     def set_guide(self, guide) -> None:

@@ -17,3 +17,7 @@ pyobjc-framework-Cocoa>=10,<13; sys_platform == "darwin"
 torch>=2.8,<3
 torchvision>=0.23,<1
 certifi>=2025.1
+
+# Optional low-confidence multimodal handwriting review
+google-genai>=1,<2
+python-dotenv>=1,<2

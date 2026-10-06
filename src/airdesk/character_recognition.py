@@ -212,6 +212,48 @@ class PersonalCharacterRecognizer:
         return None if model_image is None else self._predict(model_image)
 
 
+class MultiModeCharacterRecognizer:
+    """Keep all validated classifiers loaded and route to the selected mode."""
+
+    modes = tuple(RECOGNITION_CLASSES)
+
+    def __init__(self, initial_mode: str = "lowercase") -> None:
+        if initial_mode not in self.modes:
+            raise ValueError(f"unsupported recognition mode: {initial_mode}")
+        self._recognizers = {
+            mode: PersonalCharacterRecognizer(mode) for mode in self.modes
+        }
+        self.mode = initial_mode
+
+    @property
+    def current(self) -> PersonalCharacterRecognizer:
+        return self._recognizers[self.mode]
+
+    @property
+    def classes(self) -> str:
+        return self.current.classes
+
+    @property
+    def preserves_position(self) -> bool:
+        return self.current.preserves_position
+
+    def verify_ready(self) -> None:
+        """Require every model so mode switching cannot fail halfway through text."""
+        for recognizer in self._recognizers.values():
+            recognizer.verify_ready()
+
+    def cycle_mode(self) -> str:
+        current_index = self.modes.index(self.mode)
+        self.mode = self.modes[(current_index + 1) % len(self.modes)]
+        return self.mode
+
+    def recognize(self, canvas: np.ndarray) -> RecognitionResult | None:
+        return self.current.recognize(canvas)
+
+    def recognize_strokes(self, strokes, guide) -> RecognitionResult | None:
+        return self.current.recognize_strokes(strokes, guide)
+
+
 class EmnistCharacterRecognizer:
     """Run the trained EMNIST A–Z classifier on an AirDesk canvas."""
 
