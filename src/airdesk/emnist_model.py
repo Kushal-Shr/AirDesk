@@ -9,9 +9,9 @@ LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
 class EmnistLetterCNN(nn.Module):
-    """Classify a centered 28×28 grayscale image as one of A–Z."""
+    """Classify a 28×28 grayscale image using a configurable label count."""
 
-    def __init__(self) -> None:
+    def __init__(self, number_of_classes: int = len(LETTERS)) -> None:
         super().__init__()
         self.features = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=3, padding=1),
@@ -29,7 +29,7 @@ class EmnistLetterCNN(nn.Module):
             nn.Linear(96 * 3 * 3, 128),
             nn.ReLU(inplace=True),
             nn.Dropout(0.20),
-            nn.Linear(128, len(LETTERS)),
+            nn.Linear(128, number_of_classes),
         )
 
     def forward(self, image):

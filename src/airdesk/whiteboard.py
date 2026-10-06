@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from .air_mouse import map_preview_to_screen
-from .character_recognition import EmnistCharacterRecognizer
+from .character_recognition import EmnistCharacterRecognizer, make_writing_guide
 from .desktop_controls import _landmark_points, finger_is_extended
 from .hand_lock import FINGER_JOINTS, finger_is_curled, thumb_is_raised
 from .native_overlay import MemoryInkOverlay
@@ -106,6 +106,12 @@ class AirWritingController:
         self.accept_hold = HoldLatch(ACCEPT_HOLD_SECONDS)
         self.recognition_feedback = ""
         self.text_output_allowed = True
+        self.recognition_mode = getattr(self.recognizer, "mode", "uppercase")
+        self.writing_guide = None
+        if getattr(self.recognizer, "preserves_position", False):
+            self.writing_guide = make_writing_guide(
+                self.overlay.size, self.recognition_mode.upper()
+            )
 
     @property
     def is_overlay_active(self) -> bool:
@@ -131,17 +137,47 @@ class AirWritingController:
 
     def reset_transient(self) -> None:
         self._lift_pen()
+        self.overlay.hide_cursor()
         self.clear_hold.reset()
         self.accept_hold.reset()
+
+    def _map_right_index(
+        self,
+        landmarks,
+        frame_width: int,
+        frame_height: int,
+    ) -> tuple[tuple[int, int], tuple[int, int]]:
+        active_area = ActiveRectangle.from_frame(frame_width, frame_height)
+        index_tip = landmarks[8]
+        raw_point = (
+            round(index_tip.x * frame_width),
+            round(index_tip.y * frame_height),
+        )
+        pen_point = map_to_preview(
+            raw_point,
+            active_area,
+            frame_width,
+            frame_height,
+        )
+        screen_point = map_preview_to_screen(
+            pen_point,
+            (frame_width, frame_height),
+            self.overlay.size,
+        )
+        return pen_point, screen_point
 
     def _set_mode(self, mode: str, system_controller) -> None:
         self.mode = mode
         self.reset_transient()
-        system_controller.disable(f"entered {mode.lower()} mode")
+        if system_controller is not None:
+            system_controller.disable(f"entered {mode.lower()} mode")
         if self.is_overlay_active:
             self.text_output_allowed = True
+            if self.writing_guide is not None:
+                self.overlay.set_guide(self.writing_guide)
             self.overlay.show()
         else:
+            self.overlay.clear_guide()
             self.overlay.hide()
         print(f"AirDesk mode: {mode} (real system output is OFF)")
 
@@ -157,7 +193,8 @@ class AirWritingController:
             right = f"ACCEPT {round(self.accept_hold.progress * 100)}%"
         feedback = f"  |  {self.recognition_feedback}" if self.recognition_feedback else ""
         self.overlay.set_status(
-            f"AIR WRITE | L: {left} | R: {right} | 👍 accept | palms: desktop{feedback}"
+            f"AIR WRITE [{self.recognition_mode.upper()}] | L: {left} | "
+            f"R: {right} | 👍 accept | palms: desktop{feedback}"
         )
 
     def _clear_writing(self) -> None:
@@ -170,7 +207,12 @@ class AirWritingController:
             self.recognition_feedback = "TEXT OUTPUT STOPPED BY ESC — re-enter Air Write"
             return
         try:
-            result = self.recognizer.recognize(self.canvas)
+            if self.writing_guide is not None:
+                result = self.recognizer.recognize_strokes(
+                    self.overlay.strokes, self.writing_guide
+                )
+            else:
+                result = self.recognizer.recognize(self.canvas)
         except Exception as error:
             self.recognition_feedback = f"OCR ERROR: {error}"
             return
@@ -210,12 +252,23 @@ class AirWritingController:
             self._set_mode(new_mode, system_controller)
 
         if not self.is_overlay_active:
+            self.overlay.hide_cursor()
             return
         if both_open:
             self._lift_pen()
+            self.overlay.hide_cursor()
             self.clear_hold.update(False, now)
             self._update_status(lock_states)
             return
+
+        mapped_right_index = None
+        if right is not None and not lock_states["RIGHT"].locked:
+            mapped_right_index = self._map_right_index(
+                right[1], frame_width, frame_height
+            )
+            self.overlay.set_cursor(mapped_right_index[1], active=False)
+        else:
+            self.overlay.hide_cursor()
 
         clear_requested = left_open and not right_open
         self.canvas_cleared_feedback = False
@@ -239,6 +292,7 @@ class AirWritingController:
             self._recognize_and_commit(system_controller)
         if thumbs_up:
             self._lift_pen()
+            self.overlay.hide_cursor()
             self._update_status(lock_states)
             return
 
@@ -247,10 +301,7 @@ class AirWritingController:
             self._update_status(lock_states)
             return
 
-        active_area = ActiveRectangle.from_frame(frame_width, frame_height)
-        index_tip = right[1][8]
-        raw_point = (round(index_tip.x * frame_width), round(index_tip.y * frame_height))
-        pen_point = map_to_preview(raw_point, active_area, frame_width, frame_height)
+        pen_point, screen_point = mapped_right_index
         if self.previous_pen_point is not None:
             cv2.line(
                 self.canvas,
@@ -260,10 +311,8 @@ class AirWritingController:
                 PEN_THICKNESS,
                 cv2.LINE_AA,
             )
-        screen_point = map_preview_to_screen(
-            pen_point, (frame_width, frame_height), self.overlay.size
-        )
         self.overlay.add_point(screen_point)
+        self.overlay.set_cursor(screen_point, active=True)
         self.previous_pen_point = pen_point
         self.pen_down = True
         self._update_status(lock_states)
@@ -291,6 +340,7 @@ class AirWritingController:
         self.text_output_allowed = False
         self.accept_hold.reset()
         self._lift_pen()
+        self.overlay.hide_cursor()
         self.recognition_feedback = "SAFE — ESC; re-enter Air Write to re-arm"
 
     def close(self) -> None:

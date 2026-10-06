@@ -82,6 +82,17 @@ class FakeRecognizer:
         return self.result
 
 
+class FakeSymbolRecognizer(FakeRecognizer):
+    mode = "symbols"
+    preserves_position = True
+
+    def recognize_strokes(self, strokes, guide):
+        self.calls += 1
+        self.received_strokes = strokes
+        self.received_guide = guide
+        return self.result
+
+
 class PoseTests(unittest.TestCase):
     def test_open_palm_requires_extended_fingers(self):
         self.assertTrue(is_open_palm(make_hand(open_palm=True)))
@@ -197,6 +208,8 @@ class AirWritingControllerTests(unittest.TestCase):
         )
         self.assertTrue(np.any(self.controller.canvas < 255))
         self.assertTrue(self.controller.pen_down)
+        self.assertTrue(self.overlay.cursor_active)
+        self.assertIsNotNone(self.overlay.cursor_point)
         drawn_points = [point for stroke in self.overlay.strokes for point in stroke]
         self.assertGreaterEqual(len(drawn_points), 2)
         self.assertTrue(all(0 <= x < 1280 and 0 <= y < 800 for x, y in drawn_points))
@@ -214,6 +227,28 @@ class AirWritingControllerTests(unittest.TestCase):
         self.assertFalse(self.controller.pen_down)
         self.assertIsNone(self.controller.previous_pen_point)
         self.assertEqual(self.overlay.strokes[-1], [])
+        self.assertIsNone(self.overlay.cursor_point)
+
+    def test_released_pinch_keeps_aiming_cursor_without_drawing(self):
+        self.controller.mode = "AIR_WRITE"
+        pointing = make_hand(open_palm=False, pinched=False)
+
+        self.controller.update(
+            {"RIGHT": (1.0, pointing, None)},
+            self.unlocked,
+            1.0,
+            640,
+            480,
+            self.system,
+        )
+
+        self.assertIsNotNone(self.overlay.cursor_point)
+        self.assertFalse(self.overlay.cursor_active)
+        self.assertFalse(self.controller.pen_down)
+        self.assertEqual(self.overlay.strokes, [])
+
+        self.controller.update({}, self.unlocked, 1.1, 640, 480, self.system)
+        self.assertIsNone(self.overlay.cursor_point)
 
     def test_left_open_palm_clears_after_hold(self):
         self.controller.mode = "AIR_WRITE"
@@ -274,6 +309,21 @@ class AirWritingControllerTests(unittest.TestCase):
         self.assertEqual(self.recognizer.calls, 0)
         self.assertEqual(self.system.committed_text, [])
         self.assertIn("STOPPED BY ESC", self.controller.recognition_feedback)
+
+    def test_symbol_mode_uses_position_preserving_strokes(self):
+        recognizer = FakeSymbolRecognizer(RecognitionResult(".", 0.93))
+        controller = AirWritingController(self.overlay, recognizer)
+        controller.mode = "AIR_WRITE"
+        controller.ensure_canvas(640, 480)
+        self.overlay.add_point((640, 650))
+        thumbs_up = {"RIGHT": (1.0, make_thumbs_up_hand(), None)}
+
+        controller.update(thumbs_up, self.unlocked, 1.0, 640, 480, self.system)
+        controller.update(thumbs_up, self.unlocked, 1.66, 640, 480, self.system)
+
+        self.assertEqual(self.system.committed_text, ["."])
+        self.assertEqual(recognizer.calls, 1)
+        self.assertIsNotNone(recognizer.received_guide)
 
 
 if __name__ == "__main__":
