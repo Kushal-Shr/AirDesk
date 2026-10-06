@@ -416,14 +416,14 @@ class AirWritingControllerTests(unittest.TestCase):
         self.controller.update(
             both_thumbs, self.unlocked, 3.91, 640, 480, self.system
         )
-        self.assertEqual(self.system.committed_text, ["A"])
+        self.assertEqual(self.system.committed_text, ["A "])
         self.assertEqual(self.controller.sentence.text, "")
 
         # A held confirmation cannot type the same character repeatedly.
         self.controller.update(
             both_thumbs, self.unlocked, 4.5, 640, 480, self.system
         )
-        self.assertEqual(self.system.committed_text, ["A"])
+        self.assertEqual(self.system.committed_text, ["A "])
 
     def test_left_thumb_adds_space_and_left_pinch_undoes(self):
         self.controller.mode = "AIR_WRITE"
@@ -535,13 +535,13 @@ class WholeLineWritingControllerTests(unittest.TestCase):
         self.controller.update({}, self.unlocked, 4.11, 640, 480, self.system)
 
         self.assertEqual(self.recognizer.calls, 1)
-        self.assertEqual(self.system.committed_text, ["Hi 2!"])
+        self.assertEqual(self.system.committed_text, ["Hi 2! "])
         self.assertEqual(self.overlay.preview, "Hi 2!")
         self.assertTrue(np.all(self.controller.canvas == 255))
         self.assertFalse(self.controller.has_line_ink)
 
         self.controller.update({}, self.unlocked, 8.0, 640, 480, self.system)
-        self.assertEqual(self.system.committed_text, ["Hi 2!"])
+        self.assertEqual(self.system.committed_text, ["Hi 2! "])
 
     def test_left_undo_hold_removes_only_the_latest_stroke(self):
         first = make_hand(open_palm=True, pinched=True)
@@ -626,7 +626,7 @@ class WholeLineWritingControllerTests(unittest.TestCase):
         controller._gemini_future.result(timeout=1.0)
         controller._poll_gemini_review(self.system)
 
-        self.assertEqual(self.system.committed_text, ["Hi C!"])
+        self.assertEqual(self.system.committed_text, ["Hi C! "])
         self.assertEqual(self.overlay.preview, "Hi C!")
         self.assertEqual(len(reviewer.calls), 1)
         self.assertIn("CORRECTED AND INSERTED", controller.recognition_feedback)

@@ -478,6 +478,8 @@ with `GEMINI_FALLBACK_MODEL`. Never commit an API key to the repository. Gemini
 corrections at 90% confidence or higher are inserted into the previously
 focused text field; lower-confidence results remain labeled `PREVIEW ONLY`.
 High-confidence local results continue to use the existing automatic insertion.
+Every successful Air Write insertion adds exactly one trailing space so the
+next recognized word or sentence does not run into the previous text.
 If the key, network, SDK, or Gemini service is unavailable, local recognition
 continues normally.
 

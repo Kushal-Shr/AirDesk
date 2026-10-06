@@ -38,6 +38,11 @@ MIN_LINE_CONFIDENCE = 0.90
 MIN_GEMINI_INSERT_CONFIDENCE = 0.90
 
 
+def text_with_trailing_space(text: str) -> str:
+    """Return insertion text ending in exactly one separator space."""
+    return f"{text.rstrip()} "
+
+
 def is_open_palm(landmarks) -> bool:
     """Require four extended fingers without a competing thumb/index pinch."""
     points = _landmark_points(landmarks)
@@ -504,7 +509,7 @@ class AirWritingController:
         if not text:
             self.recognition_feedback = "SENTENCE IS EMPTY"
             return
-        if system_controller.commit_text(text):
+        if system_controller.commit_text(text_with_trailing_space(text)):
             self.recognition_feedback = f"INSERTED: {text}"
             self.sentence.clear()
             self._refresh_sentence_preview()
@@ -794,7 +799,7 @@ class WholeLineWritingController(AirWritingController):
                 "PREVIEW ONLY"
             )
             return
-        if system_controller.commit_text(result.text):
+        if system_controller.commit_text(text_with_trailing_space(result.text)):
             self.last_inserted_text = result.text
             action = "AGREED AND INSERTED" if result.text == local_text else "CORRECTED AND INSERTED"
             self.recognition_feedback = (
@@ -825,7 +830,7 @@ class WholeLineWritingController(AirWritingController):
                     f"LOW CONFIDENCE {round(result.confidence * 100)}% — not inserted"
                 )
             return
-        if system_controller.commit_text(result.text):
+        if system_controller.commit_text(text_with_trailing_space(result.text)):
             self.last_inserted_text = result.text
             self.recognition_feedback = (
                 f"INSERTED: {result.text} ({round(result.confidence * 100)}%)"
