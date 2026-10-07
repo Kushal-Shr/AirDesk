@@ -185,11 +185,12 @@ class PinchGestureTests(unittest.TestCase):
             SINGLE_CLICK_ACTION,
         )
 
-    def test_two_quick_pinches_emit_one_double_click(self):
+    def test_two_quick_pinches_emit_immediate_first_and_double_followup(self):
         detector = PrimaryPinchDetector()
         detector.update(True, 1.00, allow_double=True, allow_drag=True)
-        self.assertIsNone(
+        self.assertEqual(
             detector.update(False, 1.10, allow_double=True, allow_drag=True)
+            , SINGLE_CLICK_ACTION
         )
         detector.update(True, 1.22, allow_double=True, allow_drag=True)
         self.assertEqual(
@@ -209,7 +210,12 @@ class PinchGestureTests(unittest.TestCase):
             DRAG_END_ACTION,
         )
 
-    def test_controller_sends_one_native_double_click(self):
+    def test_long_pinch_starting_at_zero_is_not_a_quick_click(self):
+        detector = PrimaryPinchDetector()
+        detector.update(True, 0.0, allow_double=False, allow_drag=False)
+        self.assertIsNone(detector.update(False, 0.9, allow_double=False, allow_drag=False))
+
+    def test_controller_sends_immediate_first_and_second_click(self):
         backend = FakeBackend()
         controller = DesktopControlController(backend, FakeEscapeMonitor())
         controller.toggle()
@@ -225,8 +231,8 @@ class PinchGestureTests(unittest.TestCase):
         controller.update_gestures({"RIGHT": (1.0, pinch, None)}, locks, 1.22)
         controller.update_gestures({"RIGHT": (1.0, neutral, None)}, locks, 1.32)
 
-        self.assertEqual(backend.double_clicks, [("left", 0.12, False)])
-        self.assertEqual(backend.clicks, [])
+        self.assertEqual(backend.double_clicks, [])
+        self.assertEqual(backend.clicks, [("left", False), ("left", False)])
 
     def test_lock_releases_an_active_drag(self):
         backend = FakeBackend()
@@ -288,6 +294,29 @@ class ScrollTests(unittest.TestCase):
 
 
 class ControllerSafetyTests(unittest.TestCase):
+    def test_air_write_exit_guard_requires_a_fresh_gesture(self):
+        backend = FakeBackend()
+        controller = DesktopControlController(backend, FakeEscapeMonitor())
+        controller.toggle()
+        unlocked = SimpleNamespace(locked=False)
+        locked = SimpleNamespace(locked=True)
+        locks = {"LEFT": locked, "RIGHT": unlocked}
+        neutral = make_hand()
+        pinch = PinchGestureTests.primary_pinch_hand()
+
+        controller.guard_actions_until(2.0)
+        controller.update_gestures({"RIGHT": (1.0, pinch, None)}, locks, 1.0)
+        controller.update_gestures({"RIGHT": (1.0, neutral, None)}, locks, 1.2)
+        self.assertTrue(controller.enabled)
+        self.assertEqual(backend.clicks, [])
+
+        # Once the guard expires, a neutral frame re-arms the detector and a
+        # completely new pinch can click normally.
+        controller.update_gestures({"RIGHT": (1.0, neutral, None)}, locks, 2.1)
+        controller.update_gestures({"RIGHT": (1.0, pinch, None)}, locks, 2.2)
+        controller.update_gestures({"RIGHT": (1.0, neutral, None)}, locks, 2.3)
+        self.assertEqual(backend.clicks, [("left", False)])
+
     def test_global_escape_disables_output(self):
         backend = FakeBackend()
         monitor = FakeEscapeMonitor()

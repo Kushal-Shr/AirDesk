@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .apple_theme import configure_floating_panel, make_glass_container, make_tinted_card
+
 
 @dataclass(frozen=True)
 class PaletteCommand:
@@ -20,6 +22,7 @@ PALETTE_COMMANDS = (
     PaletteCommand("undo", "Undo", ("command", "z")),
     PaletteCommand("redo", "Redo", ("command", "shift", "z")),
     PaletteCommand("select_all", "Select All", ("command", "a")),
+    PaletteCommand("save_document", "Save Document", ("command", "s")),
     PaletteCommand("screenshot", "Screenshot", ("command", "shift", "4")),
     PaletteCommand("close_window", "Close Window", ("command", "w")),
 )
@@ -30,9 +33,14 @@ class MemoryCommandPalette:
 
     def __init__(
         self,
-        bounds: tuple[int, int, int, int] = (780, 300, 1140, 696),
+        bounds: tuple[int, int, int, int] | None = None,
     ) -> None:
-        self.bounds = bounds
+        self.bounds = bounds or (
+            780,
+            300,
+            1140,
+            300 + 54 + 36 * len(PALETTE_COMMANDS) + 18,
+        )
         self.visible = False
         self.highlighted_index: int | None = None
         self.enabled_keys: set[str] = set()
@@ -80,6 +88,7 @@ def _load_appkit():
         NSFont,
         NSPanel,
         NSScreen,
+        NSTextAlignmentRight,
         NSTextField,
         NSWindowCollectionBehaviorCanJoinAllSpaces,
         NSWindowCollectionBehaviorFullScreenAuxiliary,
@@ -95,10 +104,10 @@ def _load_appkit():
 class NativeCommandPalette:
     """Centered palette controlled by hand position, never by keyboard focus."""
 
-    WIDTH = 360
-    HEADER = 54
-    ROW_HEIGHT = 36
-    FOOTER = 20
+    WIDTH = 390
+    HEADER = 76
+    ROW_HEIGHT = 42
+    FOOTER = 18
     HEIGHT = HEADER + ROW_HEIGHT * len(PALETTE_COMMANDS) + FOOTER
 
     def __init__(self) -> None:
@@ -116,7 +125,7 @@ class NativeCommandPalette:
 
         self._kit = kit
         self._app = kit["NSApplication"].sharedApplication()
-        screen = kit["NSScreen"].mainScreen().frame()
+        screen = kit["NSScreen"].screens()[0].frame()
         left = round(screen.origin.x + (screen.size.width - self.WIDTH) / 2)
         bottom = round(screen.origin.y + (screen.size.height - self.HEIGHT) / 2)
         frame = kit["NSMakeRect"](left, bottom, self.WIDTH, self.HEIGHT)
@@ -127,11 +136,7 @@ class NativeCommandPalette:
         self._panel = AirDeskCommandPalettePanel.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, style, kit["NSBackingStoreBuffered"], False
         )
-        self._panel.setOpaque_(True)
-        self._panel.setBackgroundColor_(
-            kit["NSColor"].colorWithCalibratedWhite_alpha_(0.08, 0.96)
-        )
-        self._panel.setHasShadow_(True)
+        configure_floating_panel(self._panel)
         self._panel.setIgnoresMouseEvents_(True)
         self._panel.setLevel_(kit["NSStatusWindowLevel"])
         self._panel.setHidesOnDeactivate_(False)
@@ -140,22 +145,55 @@ class NativeCommandPalette:
             | kit["NSWindowCollectionBehaviorFullScreenAuxiliary"]
         )
 
-        content = self._panel.contentView()
+        glass, content = make_glass_container(
+            kit["NSMakeRect"](0, 0, self.WIDTH, self.HEIGHT),
+            corner_radius=26.0,
+        )
+        self._panel.setContentView_(glass)
         title = self._make_label(
-            "AIR COMMAND PALETTE",
-            18,
-            self.HEIGHT - 40,
+            "Air Commands",
+            22,
+            self.HEIGHT - 36,
             self.WIDTH - 36,
-            25,
+            26,
             bold=True,
         )
         content.addSubview_(title)
+        subtitle = self._make_label(
+            "Point with your left hand  •  pinch to choose",
+            22,
+            self.HEIGHT - 58,
+            self.WIDTH - 44,
+            18,
+            secondary=True,
+        )
+        content.addSubview_(subtitle)
         self._rows = []
+        self._row_views = []
+        self._shortcut_labels = []
         for index, command in enumerate(PALETTE_COMMANDS):
-            y = self.HEIGHT - self.HEADER - (index + 1) * self.ROW_HEIGHT + 5
-            row = self._make_label("", 12, y, self.WIDTH - 24, 28)
-            content.addSubview_(row)
+            y = self.HEIGHT - self.HEADER - (index + 1) * self.ROW_HEIGHT + 4
+            row_view = make_tinted_card(
+                kit["NSMakeRect"](12, y, self.WIDTH - 24, self.ROW_HEIGHT - 6),
+                corner_radius=12.0,
+                alpha=0.055,
+            )
+            row = self._make_label("", 14, 7, 230, 23)
+            shortcut = self._make_label(
+                "",
+                238,
+                7,
+                self.WIDTH - 24 - 252,
+                23,
+                secondary=True,
+            )
+            shortcut.setAlignment_(kit["NSTextAlignmentRight"])
+            row_view.addSubview_(row)
+            row_view.addSubview_(shortcut)
+            content.addSubview_(row_view)
             self._rows.append(row)
+            self._row_views.append(row_view)
+            self._shortcut_labels.append(shortcut)
 
         self.bounds = (
             left,
@@ -167,7 +205,9 @@ class NativeCommandPalette:
         self.highlighted_index = None
         self.enabled_keys: set[str] = set()
 
-    def _make_label(self, text, x, y, width, height, *, bold=False):
+    def _make_label(
+        self, text, x, y, width, height, *, bold=False, secondary=False
+    ):
         label = self._kit["NSTextField"].alloc().initWithFrame_(
             self._kit["NSMakeRect"](x, y, width, height)
         )
@@ -176,32 +216,56 @@ class NativeCommandPalette:
         label.setDrawsBackground_(False)
         label.setEditable_(False)
         label.setSelectable_(False)
-        label.setTextColor_(self._kit["NSColor"].whiteColor())
+        label.setTextColor_(
+            self._kit["NSColor"].secondaryLabelColor()
+            if secondary
+            else self._kit["NSColor"].labelColor()
+        )
         label.setFont_(
-            self._kit["NSFont"].boldSystemFontOfSize_(15.0)
+            self._kit["NSFont"].boldSystemFontOfSize_(19.0)
             if bold
-            else self._kit["NSFont"].systemFontOfSize_(14.0)
+            else self._kit["NSFont"].systemFontOfSize_(13.0)
         )
         return label
 
     def _redraw_rows(self) -> None:
-        for index, (row, command) in enumerate(zip(self._rows, PALETTE_COMMANDS)):
+        for index, (row, row_view, shortcut_label, command) in enumerate(
+            zip(
+                self._rows,
+                self._row_views,
+                self._shortcut_labels,
+                PALETTE_COMMANDS,
+            )
+        ):
             enabled = command.key in self.enabled_keys
             shortcut = " + ".join(part.title() for part in command.shortcut)
-            marker = "✓" if enabled else "○"
-            row.setStringValue_(f"  {marker}  {command.label}     {shortcut}")
+            marker = "●" if enabled else "○"
+            row.setStringValue_(f"{marker}   {command.label}")
+            shortcut_label.setStringValue_(shortcut)
             row.setTextColor_(
-                self._kit["NSColor"].whiteColor()
+                self._kit["NSColor"].labelColor()
+                if enabled
+                else self._kit["NSColor"].disabledControlTextColor()
+            )
+            shortcut_label.setTextColor_(
+                self._kit["NSColor"].secondaryLabelColor()
                 if enabled
                 else self._kit["NSColor"].disabledControlTextColor()
             )
             highlighted = index == self.highlighted_index
-            row.setDrawsBackground_(highlighted)
             if highlighted:
-                row.setBackgroundColor_(
-                    self._kit["NSColor"].colorWithCalibratedRed_green_blue_alpha_(
-                        0.10, 0.42, 0.95, 0.88
-                    )
+                row_view.layer().setBackgroundColor_(
+                    self._kit["NSColor"].systemBlueColor()
+                    .colorWithAlphaComponent_(0.78)
+                    .CGColor()
+                )
+                row.setTextColor_(self._kit["NSColor"].whiteColor())
+                shortcut_label.setTextColor_(self._kit["NSColor"].whiteColor())
+            else:
+                row_view.layer().setBackgroundColor_(
+                    self._kit["NSColor"].labelColor()
+                    .colorWithAlphaComponent_(0.055)
+                    .CGColor()
                 )
 
     def show(self, enabled_keys: set[str]) -> None:

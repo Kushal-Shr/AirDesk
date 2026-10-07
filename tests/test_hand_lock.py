@@ -59,10 +59,10 @@ class HandLockStateTests(unittest.TestCase):
     def test_open_hand_waits_before_unlocking(self):
         state = HandLockState()
         state.update(fist_detected=False, hand_seen=True, now=1.0)
-        state.update(fist_detected=False, hand_seen=True, now=1.24)
+        state.update(fist_detected=False, hand_seen=True, now=1.11)
         self.assertTrue(state.locked)
 
-        state.update(fist_detected=False, hand_seen=True, now=1.25)
+        state.update(fist_detected=False, hand_seen=True, now=1.12)
         self.assertFalse(state.locked)
 
     def test_fist_locks_immediately(self):

@@ -21,7 +21,7 @@ class ControlPanelTests(unittest.TestCase):
             processing_ms=12.5,
         )
 
-        self.assertEqual(status.mode, "SAFE PREVIEW")
+        self.assertEqual(status.mode, "STOPPED")
         self.assertEqual(status.left_hand, "LOCKED")
         self.assertEqual(status.right_hand, "LOCKED")
 
@@ -38,7 +38,7 @@ class ControlPanelTests(unittest.TestCase):
             processing_ms=8.0,
         )
 
-        self.assertEqual(status.mode, "ACTIVE")
+        self.assertEqual(status.mode, "LIVE")
         self.assertEqual(status.left_hand, "SCROLL")
         self.assertEqual(status.right_hand, "COMMAND")
 
@@ -59,6 +59,22 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(status.left_hand, "POINTER")
         self.assertEqual(status.fps, 0.0)
         self.assertEqual(status.processing_ms, 0.0)
+
+    def test_air_write_is_shown_as_an_overlay_on_live_output(self):
+        status = build_control_panel_status(
+            system_enabled=True,
+            paused=False,
+            left_locked=False,
+            right_locked=False,
+            cursor_visible=False,
+            left_action=None,
+            right_action=None,
+            fps=30.0,
+            processing_ms=10.0,
+            writing_active=True,
+        )
+
+        self.assertEqual(status.mode, "LIVE · AIR WRITE")
 
     def test_memory_panel_keeps_latest_status(self):
         panel = MemoryControlPanel()

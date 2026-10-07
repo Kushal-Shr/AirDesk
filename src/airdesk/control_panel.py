@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .apple_theme import configure_floating_panel, make_glass_container, make_tinted_card
+
 
 CONTROL_INSTRUCTIONS = (
     ("Desktop gestures", "Pointer — left index only"),
@@ -11,17 +13,19 @@ CONTROL_INSTRUCTIONS = (
     ("Desktop gestures", "Left click — quick right thumb–index pinch"),
     ("Desktop gestures", "Double click — two quick right thumb–index pinches"),
     ("Desktop gestures", "Right click — right thumb + index + middle pinch"),
-    ("Desktop gestures", "Drag / select — hold right pinch; move left pointer"),
+    ("Desktop gestures", "Drag / select — hold right pinch ~0.3s; move left pointer"),
     ("Desktop gestures", "Mission Control — right 3-finger swipe up"),
     ("Desktop gestures", "Switch apps — right 3-finger swipe left / right"),
+    ("Desktop gestures", "Enter — right index only; hold briefly"),
     ("Desktop gestures", "Lock a hand — close that hand into a fist"),
-    ("Air Command Palette", "Open — right 4 fingers up for 0.5 seconds"),
+    ("Air Command Palette", "Open — right index + middle up for ~0.3s"),
     ("Air Command Palette", "Highlight — move the left-hand pointer"),
     ("Air Command Palette", "Choose — right thumb–index pinch"),
     ("Air Command Palette", "Cancel — right fist or move hand away"),
     ("Air Command Palette", "Spotlight — Command + Space"),
     ("Air Command Palette", "Copy / Paste / Cut — Command + C / V / X"),
     ("Air Command Palette", "Undo / Redo — Command + Z / Shift + Z"),
+    ("Air Command Palette", "Save Document — Command + S"),
     ("Air Command Palette", "Screenshot — Command + Shift + 4"),
     ("Air Command Palette", "Close Window — Command + W"),
 )
@@ -31,7 +35,7 @@ CONTROL_INSTRUCTIONS = (
 class ControlPanelStatus:
     """Small view model that keeps camera code independent from AppKit."""
 
-    mode: str = "SAFE PREVIEW"
+    mode: str = "STOPPED"
     left_hand: str = "LOCKED"
     right_hand: str = "LOCKED"
     fps: float = 0.0
@@ -49,9 +53,12 @@ def build_control_panel_status(
     right_action: str | None,
     fps: float,
     processing_ms: float,
+    writing_active: bool = False,
 ) -> ControlPanelStatus:
     """Translate current runtime values into the panel's stable vocabulary."""
-    mode = "PAUSED" if paused else ("ACTIVE" if system_enabled else "SAFE PREVIEW")
+    mode = "PAUSED" if paused else ("LIVE" if system_enabled else "STOPPED")
+    if writing_active:
+        mode = f"{mode} · AIR WRITE"
 
     if left_locked:
         left_hand = "LOCKED"
@@ -66,6 +73,8 @@ def build_control_panel_status(
         right_hand = "LOCKED"
     elif right_action and right_action.upper() == "DRAG":
         right_hand = "DRAG"
+    elif right_action and right_action.upper() == "ENTER":
+        right_hand = "ENTER"
     elif right_action and right_action.upper() in {"COMMAND", "SWIPE", "CLICK"}:
         right_hand = "COMMAND"
     else:
@@ -128,7 +137,7 @@ def _load_appkit():
         NSTextField,
         NSWindowCollectionBehaviorCanJoinAllSpaces,
         NSWindowCollectionBehaviorFullScreenAuxiliary,
-        NSWindowStyleMaskTitled,
+        NSWindowStyleMaskBorderless,
         NSWindowStyleMaskUtilityWindow,
     )
     from Foundation import NSDate, NSMakeRect, NSObject
@@ -139,8 +148,8 @@ def _load_appkit():
 class NativeControlPanel:
     """Read-only floating gesture guide with live state and a hide control."""
 
-    WIDTH = 390
-    HEIGHT = 742
+    WIDTH = 420
+    HEIGHT = 760
 
     def __init__(self, config=None) -> None:
         kit = _load_appkit()
@@ -172,87 +181,115 @@ class NativeControlPanel:
         origin_x = max(screen.origin.x, screen.origin.x + screen.size.width - self.WIDTH - 18)
         origin_y = max(screen.origin.y, screen.origin.y + screen.size.height - self.HEIGHT - 18)
         frame = kit["NSMakeRect"](origin_x, origin_y, self.WIDTH, self.HEIGHT)
-        style = (
-            kit["NSWindowStyleMaskTitled"]
-            | kit["NSWindowStyleMaskUtilityWindow"]
-        )
+        style = kit["NSWindowStyleMaskBorderless"] | kit["NSWindowStyleMaskUtilityWindow"]
         self._panel = kit["NSPanel"].alloc().initWithContentRect_styleMask_backing_defer_(
             frame,
             style,
             kit["NSBackingStoreBuffered"],
             False,
         )
-        self._panel.setTitle_("AirDesk Gesture Guide")
+        configure_floating_panel(self._panel)
         self._panel.setLevel_(kit["NSFloatingWindowLevel"])
-        self._panel.setHidesOnDeactivate_(False)
         self._panel.setCollectionBehavior_(
             kit["NSWindowCollectionBehaviorCanJoinAllSpaces"]
             | kit["NSWindowCollectionBehaviorFullScreenAuxiliary"]
         )
         self._target = AirDeskControlPanelTarget.alloc().initWithOwner_(self)
 
-        content = self._panel.contentView()
-        y = self.HEIGHT - 48
-        title = self._make_label("AIRDESK GESTURE GUIDE", 18, y, 270, 25, bold=True)
+        glass, content = make_glass_container(
+            kit["NSMakeRect"](0, 0, self.WIDTH, self.HEIGHT),
+            corner_radius=28.0,
+        )
+        self._panel.setContentView_(glass)
+        y = self.HEIGHT - 45
+        title = self._make_label("AirDesk", 22, y, 250, 28, bold=True, font_size=21.0)
         content.addSubview_(title)
+        subtitle = self._make_label(
+            "Gesture Guide",
+            22,
+            y - 22,
+            250,
+            20,
+            secondary=True,
+        )
+        content.addSubview_(subtitle)
         hide_button = kit["NSButton"].alloc().initWithFrame_(
-            kit["NSMakeRect"](310, y - 1, 62, 26)
+            kit["NSMakeRect"](338, y - 9, 62, 30)
         )
         hide_button.setTitle_("Hide")
+        hide_button.setBezelStyle_(1)
         hide_button.setTarget_(self._target)
         hide_button.setAction_("hidePanel:")
         content.addSubview_(hide_button)
-        y -= 34
-        self._mode_label = self._make_label("MODE: SAFE PREVIEW", 18, y, 220, 23, bold=True)
-        content.addSubview_(self._mode_label)
-        self._performance_label = self._make_label("FPS: 0.0  •  0.0 ms", 238, y, 135, 23)
-        content.addSubview_(self._performance_label)
-        y -= 27
-        self._hands_label = self._make_label(
-            "LEFT: LOCKED    RIGHT: LOCKED", 18, y, self.WIDTH - 36, 22
+        y -= 88
+        status_card = make_tinted_card(
+            kit["NSMakeRect"](16, y, self.WIDTH - 32, 62),
+            corner_radius=16.0,
+            alpha=0.09,
         )
-        content.addSubview_(self._hands_label)
-        y -= 30
+        content.addSubview_(status_card)
+        self._mode_label = self._make_label(
+            "●  STOPPED", 14, 34, 180, 21, bold=True, font_size=13.0
+        )
+        status_card.addSubview_(self._mode_label)
+        self._performance_label = self._make_label(
+            "0.0 FPS  •  0.0 ms", 205, 34, 166, 21, secondary=True
+        )
+        self._performance_label.setAlignment_(2)
+        status_card.addSubview_(self._performance_label)
+        self._hands_label = self._make_label(
+            "LEFT  LOCKED     •     RIGHT  LOCKED", 14, 10, 360, 20
+        )
+        status_card.addSubview_(self._hands_label)
+        y -= 28
         notice = self._make_label(
-            "Read-only guide — controls are available automatically.",
-            18,
+            "Controls are always available  •  drag this panel to move it",
+            22,
             y,
             self.WIDTH - 36,
             22,
+            secondary=True,
+            font_size=11.0,
         )
-        notice.setTextColor_(kit["NSColor"].secondaryLabelColor())
         content.addSubview_(notice)
-        y -= 30
+        y -= 32
 
         current_section = None
         for section, instruction in CONTROL_INSTRUCTIONS:
             if section != current_section:
                 current_section = section
                 heading = self._make_label(
-                    current_section.upper(), 18, y, self.WIDTH - 36, 21, bold=True
+                    current_section.upper(),
+                    22,
+                    y,
+                    self.WIDTH - 44,
+                    21,
+                    bold=True,
+                    secondary=True,
+                    font_size=11.0,
                 )
-                heading.setTextColor_(kit["NSColor"].secondaryLabelColor())
                 content.addSubview_(heading)
-                y -= 25
+                y -= 24
             row = self._make_label(
                 instruction,
-                20,
+                24,
                 y,
-                self.WIDTH - 40,
+                self.WIDTH - 48,
                 22,
-                font_size=11.5,
+                font_size=11.8,
             )
             content.addSubview_(row)
-            y -= 25
+            y -= 24
 
         footer = self._make_label(
             "Click Hide; press P in the camera preview to show this guide again.",
-            18,
-            12,
+            22,
+            13,
             self.WIDTH - 36,
             20,
+            secondary=True,
+            font_size=10.5,
         )
-        footer.setTextColor_(kit["NSColor"].secondaryLabelColor())
         content.addSubview_(footer)
         self.show()
 
@@ -265,6 +302,7 @@ class NativeControlPanel:
         height,
         *,
         bold=False,
+        secondary=False,
         font_size=12.0,
     ):
         label = self._kit["NSTextField"].alloc().initWithFrame_(
@@ -275,8 +313,13 @@ class NativeControlPanel:
         label.setDrawsBackground_(False)
         label.setEditable_(False)
         label.setSelectable_(False)
+        label.setTextColor_(
+            self._kit["NSColor"].secondaryLabelColor()
+            if secondary
+            else self._kit["NSColor"].labelColor()
+        )
         label.setFont_(
-            self._kit["NSFont"].boldSystemFontOfSize_(13.0)
+            self._kit["NSFont"].boldSystemFontOfSize_(font_size)
             if bold
             else self._kit["NSFont"].systemFontOfSize_(font_size)
         )
@@ -304,10 +347,10 @@ class NativeControlPanel:
             return
         previous = self._rendered_status
         if previous is None or previous.mode != status.mode:
-            self._mode_label.setStringValue_(f"MODE: {status.mode}")
-            if status.mode == "ACTIVE":
+            self._mode_label.setStringValue_(f"●  {status.mode}")
+            if status.mode.startswith("LIVE"):
                 mode_color = self._kit["NSColor"].systemGreenColor()
-            elif status.mode == "PAUSED":
+            elif status.mode.startswith("PAUSED"):
                 mode_color = self._kit["NSColor"].systemOrangeColor()
             else:
                 mode_color = self._kit["NSColor"].secondaryLabelColor()
@@ -318,7 +361,7 @@ class NativeControlPanel:
             or previous.right_hand != status.right_hand
         ):
             self._hands_label.setStringValue_(
-                f"LEFT: {status.left_hand}    RIGHT: {status.right_hand}"
+                f"LEFT  {status.left_hand}     •     RIGHT  {status.right_hand}"
             )
         if (
             previous is None
@@ -326,7 +369,7 @@ class NativeControlPanel:
             or previous.processing_ms != status.processing_ms
         ):
             self._performance_label.setStringValue_(
-                f"FPS: {status.fps:.1f}  •  {status.processing_ms:.1f} ms"
+                f"{status.fps:.1f} FPS  •  {status.processing_ms:.1f} ms"
             )
         self._rendered_status = status
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import Mock
 from types import SimpleNamespace
 
 import cv2
@@ -103,6 +104,18 @@ class GeminiCorrectionTests(unittest.TestCase):
                 )
             )
 
+    def test_invalid_confidence_and_non_text_are_rejected(self):
+        for confidence in (float("nan"), float("inf"), -1, 1.1, True, "0.95"):
+            with self.subTest(confidence=confidence), self.assertRaises(RuntimeError):
+                GeminiCorrectionClient._parse_response(json.dumps(
+                    {"text": "Hi", "confidence": confidence, "explanation": "test"}
+                ))
+        for text in (None, 123, "   "):
+            with self.subTest(text=text), self.assertRaises(RuntimeError):
+                GeminiCorrectionClient._parse_response(json.dumps(
+                    {"text": text, "confidence": 0.95, "explanation": "test"}
+                ))
+
     def test_capacity_error_retries_with_fallback_model(self):
         models = FallbackModels(
             {"text": "Hi", "confidence": 0.9, "explanation": "visual match"}
@@ -121,6 +134,40 @@ class GeminiCorrectionTests(unittest.TestCase):
         self.assertEqual(result.text, "Hi")
         self.assertEqual([call["model"] for call in models.calls], ["primary", "fallback"])
         self.assertEqual(reviewer.last_model_used, "fallback")
+
+    def test_deadline_and_transport_errors_use_and_remember_working_fallback(self):
+        import httpx
+
+        deadline = TemporaryCapacityError("deadline exceeded")
+        deadline.code = 504
+        for error in (deadline, httpx.ReadTimeout("timed out"), ConnectionError("offline")):
+            with self.subTest(error=type(error).__name__):
+                response = SimpleNamespace(text=json.dumps(
+                    {"text": "Hi", "confidence": 0.95, "explanation": "visual match"}
+                ))
+                models = Mock()
+                models.generate_content.side_effect = [error, response, response]
+                reviewer = GeminiCorrectionClient(
+                    "test-key", model="primary", fallback_model="fallback",
+                    client=SimpleNamespace(models=models),
+                )
+                canvas = np.zeros((50, 100), dtype=np.uint8)
+                self.assertEqual(reviewer.review(canvas, "Hi").text, "Hi")
+                self.assertEqual(reviewer.review(canvas, "Hi").text, "Hi")
+                self.assertEqual(
+                    [c.kwargs["model"] for c in models.generate_content.call_args_list],
+                    ["primary", "fallback", "fallback"],
+                )
+
+    def test_invalid_key_does_not_repeat_request_on_other_model(self):
+        error = TemporaryCapacityError("denied")
+        error.code = 403
+        models = Mock()
+        models.generate_content.side_effect = error
+        reviewer = GeminiCorrectionClient("test-key", client=SimpleNamespace(models=models))
+        with self.assertRaises(TemporaryCapacityError):
+            reviewer.review(np.zeros((50, 100), dtype=np.uint8), "Hi")
+        models.generate_content.assert_called_once()
 
 
 if __name__ == "__main__":

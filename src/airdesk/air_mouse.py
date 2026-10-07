@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import sys
 
 from .virtual_cursor import run_virtual_cursor
 
@@ -38,8 +39,12 @@ class SystemMouseController:
 
     backend: object
     enabled: bool = False
+    document_safety: object | None = None
 
     def __post_init__(self) -> None:
+        if sys.platform == "darwin" and getattr(self.backend, "__name__", None) == "pyautogui":
+            from .macos_input import MacOSBackend
+            self.backend = MacOSBackend(self.backend)
         self.backend.FAILSAFE = True
         self.backend.PAUSE = 0.0
         size = self.backend.size()
@@ -52,23 +57,31 @@ class SystemMouseController:
 
     def toggle(self) -> None:
         if self.enabled:
-            self.release_all_buttons()
-        self.reset_actions(require_release=not self.enabled)
-        self.enabled = not self.enabled
-        state = "ACTIVE" if self.enabled else "SAFE PREVIEW"
-        print(f"Real mouse control: {state}")
+            self.disable("M pressed")
+        else:
+            self.enable("M pressed")
+
+    def enable(self, reason: str = "enabled") -> None:
+        """Enable output idempotently and require neutral gestures first."""
+        if self.enabled:
+            return
+        self.reset_actions(require_release=True)
+        self.enabled = True
+        print(f"Real mouse control: LIVE ({reason})")
 
     def disable(self, reason: str) -> None:
         self.release_all_buttons()
         self.reset_actions(require_release=True)
         if self.enabled:
             self.enabled = False
-            print(f"Real mouse control: SAFE PREVIEW ({reason})")
+            print(f"Real mouse control: STOPPED ({reason})")
 
     def reset_actions(self, require_release: bool = False) -> None:
         """Hook for later stages that have stateful click/scroll gestures."""
 
     def close(self) -> None:
+        if self.document_safety is not None:
+            self.document_safety.close()
         self.disable("AirDesk closed")
 
     def _handle_output_error(self, action) -> bool:
@@ -91,6 +104,12 @@ class SystemMouseController:
             return False
 
         screen_point = map_preview_to_screen(point, preview_size, self.screen_size)
+        if "left" in self._held_buttons:
+            return self._handle_output_error(
+                lambda: self.backend.dragTo(
+                    *screen_point, duration=0, button="left", mouseDownUp=False, _pause=False
+                )
+            )
         return self._handle_output_error(
             lambda: self.backend.moveTo(*screen_point, _pause=False)
         )
@@ -113,6 +132,16 @@ class SystemMouseController:
             )
         )
 
+    def second_click(self, button: str = "left") -> bool:
+        """Send the second click after an already-dispatched first click."""
+        if not self.enabled:
+            return False
+        if hasattr(self.backend, "secondClick"):
+            action = lambda: self.backend.secondClick(button=button, _pause=False)
+        else:
+            action = lambda: self.backend.click(button=button, _pause=False)
+        return self._handle_output_error(action)
+
     def mouse_down(self, button: str = "left") -> bool:
         if not self.enabled or button in self._held_buttons:
             return False
@@ -126,13 +155,19 @@ class SystemMouseController:
     def mouse_up(self, button: str = "left") -> bool:
         if button not in self._held_buttons:
             return False
+        # PyAutoGUI checks its corner fail-safe even for mouseUp. A stop must
+        # still release the button when the pointer is in a fail-safe corner.
+        fail_safe = self.backend.FAILSAFE
         try:
+            self.backend.FAILSAFE = False
             self.backend.mouseUp(button=button, _pause=False)
         except Exception as error:
             self._held_buttons.discard(button)
             self.enabled = False
-            print(f"Real mouse control: SAFE PREVIEW (button release failed: {error})")
+            print(f"Real mouse control: STOPPED (button release failed: {error})")
             return False
+        finally:
+            self.backend.FAILSAFE = fail_safe
         self._held_buttons.discard(button)
         return True
 
@@ -158,8 +193,36 @@ class SystemMouseController:
         """Type text only after an explicit Air Write confirmation gesture."""
         if not text:
             return False
-        return self._handle_output_error(
+        succeeded = self._handle_output_error(
             lambda: self.backend.write(text, interval=0.0, _pause=False)
+        )
+        if succeeded and self.document_safety is not None:
+            self.document_safety.after_text_insert(
+                text,
+                self._auto_save_document,
+            )
+        return succeeded
+
+    def _auto_save_document(self) -> bool:
+        """Save after Air Write insertion, even though text output is separate."""
+        return self._handle_output_error(
+            lambda: self.backend.hotkey("command", "s", _pause=False)
+        )
+
+    def save_document(self) -> bool:
+        """Save the focused document immediately from a deliberate command."""
+        if not self.enabled:
+            return False
+        if self.document_safety is not None:
+            return self.document_safety.save_now(self._auto_save_document)
+        return self._auto_save_document()
+
+    def commit_key(self, key: str) -> bool:
+        """Press one explicit Air Write key while desktop control is paused."""
+        if not key:
+            return False
+        return self._handle_output_error(
+            lambda: self.backend.hotkey(key, _pause=False)
         )
 
 

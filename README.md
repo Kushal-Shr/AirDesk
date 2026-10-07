@@ -1,11 +1,57 @@
 # AirDesk
 
+## Run the complete local demo
+
+```bash
+cd /Users/kushal/Projects/AirDesk
+./run_airdesk.command
+```
+
+Or use `source .venv/bin/activate` followed by
+`PYTHONPATH=src python -m airdesk.air_writing`.
+The launcher also works by double-clicking `run_airdesk.command` in Finder.
+
+The integrated app starts in **LIVE** mode with desktop mouse/shortcut output enabled.
+Click the camera preview and press **M** to stop or resume desktop output.
+**P** shows/hides the gesture guide. **Esc** stops output and returns from Air
+Write to the preview. **Q** in the preview or **Ctrl+C** in Terminal quits.
+Air Write text output is armed separately when you enter using both palms.
+When leaving with both palms, pending ink is recognized and inserted before the
+overlay closes. If it cannot be inserted confidently, Air Write remains open
+and keeps the ink visible for correction or retry. AirDesk stays **LIVE** while
+the Air Write overlay is open; desktop gesture recognition is merely paused.
+After closing, lower both hands—a short guard ignores the release motion before
+accepting a fresh desktop gesture in the focused document.
+
+Every successful Air Write insertion is also stored in a local recovery history
+at `~/Library/Application Support/AirDesk/recovery.jsonl`. AirDesk sends one
+debounced **Command-S** to the focused document one second after insertion. Save
+a new document and choose its filename before the demo; otherwise macOS may show
+the application's Save As dialog on the first automatic save. **Save Document**
+is also available from the Air Command Palette for an immediate save.
+
+Read [DEMO.md](DEMO.md) for the rehearsal sequence, gesture reference, known
+handwriting limits, and recovery steps. These are the current integrated
+controls; the stage-by-stage sections below describe the project's history.
+
+Run preflight from the project root:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m airdesk.doctor --camera --native --gemini
+```
+
+This checks both models, Camera/Accessibility, the global Escape listener,
+native windows, and a Gemini request using generated test text. It does not
+type or click into your applications and saves no camera frames. Omit
+`--gemini` for offline checks. Permissions belong to the launching app, so run
+this in the same Terminal you will use during the demo.
+
 AirDesk is a beginner-friendly macOS computer-vision project. It will grow
 stage by stage into a gesture-controlled desktop interface with air-writing.
 
 AirDesk now draws through a click-through desktop overlay, splits a complete
 mixed handwriting line into characters, classifies each character independently,
-and inserts the joined result after a three-second no-ink pause.
+and inserts the joined result after a two-second no-ink pause.
 
 ## Planned project layout
 
@@ -227,6 +273,11 @@ pose briefly, then move the whole hand:
 - Right: next app (`Command + Tab`)
 - Left: previous app (`Command + Shift + Tab`)
 
+Mission Control uses the native macOS application in the integrated build, so
+it still works when the keyboard shortcut is disabled or remapped. To press
+Enter, hold only the right index finger up for about 0.3 seconds while keeping
+the thumb and other fingers folded, then release.
+
 The shortcuts are editable in `src/airdesk/shortcut_config.py`.
 
 ```bash
@@ -304,8 +355,8 @@ safety controls remain authoritative.
 
 To use the Air Command Palette:
 
-1. Hold the unlocked right index, middle, ring, and little fingers open for
-   about 0.5 seconds.
+1. Hold the right index and middle fingers up while folding the thumb, ring,
+   and little finger. Keep the pose for about 0.3 seconds.
 2. Move the left-hand pointer over a palette row.
 3. Use one right thumb–index pinch to select the highlighted row.
 4. Make a right fist or remove the right hand from view to cancel.
@@ -332,8 +383,8 @@ PYTHONPATH=src python -m airdesk.air_writing
 
 Before testing real OS control, grant the launcher (Terminal, Python, or VS
 Code) access in **System Settings → Privacy & Security → Accessibility**. The
-application still begins in `SAFE PREVIEW`; only press `M` when you deliberately
-want real mouse/keyboard output.
+integrated application begins in `LIVE` mode. Press `M` to stop or resume real
+mouse/keyboard output; `Esc` always stops it.
 
 Run the new platform-neutral tests without opening a camera or native window:
 
@@ -466,7 +517,7 @@ PYTHONPATH=src python scripts/train_merged_characters.py
 
 Write a complete
 mixed sentence from left to right inside the horizontal guide, lifting the
-pinch between strokes and words as needed. After three seconds without new ink,
+pinch between strokes and words as needed. After two seconds without new ink,
 AirDesk recognizes and inserts the complete line into the previously selected
 text field. No per-character thumbs-up or character-mode switching is used.
 Hold the left palm open to clear before submission; `Esc` blocks automatic
@@ -476,7 +527,7 @@ line shows the normalized pinch distance and the least-open of the three
 non-writing fingers so the strict pose can be adjusted in real time.
 
 To undo the most recent stroke, make a left thumb–index pinch while keeping the
-middle, ring, and little fingers up. Hold it for 0.65 seconds. A pinched hand is
+middle, ring, and little fingers up. Hold it for about 0.4 seconds. A pinched hand is
 excluded from open-palm detection, so this pose cannot accidentally clear the
 line or trigger the two-palm mode switch.
 Undo removes one complete pen-down-to-pen-up stroke, rebuilds the recognition

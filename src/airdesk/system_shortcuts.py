@@ -8,6 +8,7 @@ import numpy as np
 
 from .desktop_controls import (
     DesktopControlController,
+    DwellLatch,
     MacEscapeMonitor,
     _landmark_points,
     finger_is_extended,
@@ -27,10 +28,11 @@ SWIPE_UP = "SWIPE_UP"
 SWIPE_RIGHT = "SWIPE_RIGHT"
 SWIPE_LEFT = "SWIPE_LEFT"
 
-SWIPE_DWELL_SECONDS = 0.18
-SWIPE_DISTANCE_THRESHOLD = 0.65
+SWIPE_DWELL_SECONDS = 0.08
+SWIPE_DISTANCE_THRESHOLD = 0.48
 SWIPE_DIRECTION_DOMINANCE = 1.20
-SWIPE_COOLDOWN_SECONDS = 0.80
+SWIPE_COOLDOWN_SECONDS = 0.45
+ENTER_HOLD_SECONDS = 0.30
 
 SHORTCUT_KEYS = {
     SWIPE_UP: MISSION_CONTROL_KEYS,
@@ -75,6 +77,29 @@ def classify_swipe_pose(landmarks) -> SwipeMetrics:
         palm_x=float(palm_center[0]),
         palm_y=float(palm_center[1]),
         palm_size=palm_size,
+    )
+
+
+def classify_enter_pose(landmarks) -> bool:
+    """Require only the right index finger up, with thumb folded."""
+    points = _landmark_points(landmarks)
+    wrist = points[0]
+    palm_size = max(float(np.linalg.norm(points[9] - wrist)), 1e-6)
+    extended = tuple(
+        finger_is_extended(points, wrist, *finger_joints)
+        for finger_joints in FINGER_JOINTS
+    )
+    other_fingers_curled = all(
+        finger_is_curled(points, wrist, *finger_joints)
+        for finger_joints in FINGER_JOINTS[1:]
+    )
+    palm_center = points[[0, 5, 9, 13, 17]].mean(axis=0)
+    thumb_folded = float(np.linalg.norm(points[4] - palm_center) / palm_size) < 1.25
+    return bool(
+        extended[0]
+        and extended[1:] == (False, False, False)
+        and other_fingers_curled
+        and thumb_folded
     )
 
 
@@ -171,19 +196,33 @@ class ShortcutControlController(DesktopControlController):
         escape_monitor,
         feature_config=None,
         command_palette=None,
+        document_safety=None,
     ) -> None:
         super().__init__(
             backend,
             escape_monitor,
             feature_config=feature_config,
             command_palette=command_palette,
+            document_safety=document_safety,
         )
         self.swipe_detector = SwipeGestureDetector()
+        self.enter_detector = DwellLatch(ENTER_HOLD_SECONDS)
 
     def reset_actions(self, require_release: bool = False) -> None:
         super().reset_actions(require_release=require_release)
         if hasattr(self, "swipe_detector"):
             self.swipe_detector.reset(require_release=require_release)
+        if hasattr(self, "enter_detector"):
+            self.enter_detector.reset(require_release=require_release)
+
+    def _show_mission_control(self) -> bool:
+        """Prefer the native app so remapped/disabled shortcuts still work."""
+        if not self.enabled:
+            return False
+        native_action = getattr(self.backend, "showMissionControl", None)
+        if native_action is not None:
+            return self._handle_output_error(native_action)
+        return self.hotkey(*MISSION_CONTROL_KEYS)
 
     def update_gestures(
         self,
@@ -201,14 +240,32 @@ class ShortcutControlController(DesktopControlController):
             preview_size=preview_size,
         )
 
+        if self.actions_guarded(now):
+            self.swipe_detector.reset(require_release=True)
+            self.enter_detector.reset(require_release=True)
+            return
+
         right_observation = observations.get("RIGHT")
         if right_observation is None or lock_states["RIGHT"].locked:
             self.swipe_detector.reset(require_release=True)
+            self.enter_detector.reset(require_release=True)
             return
 
         if self.right_status == "COMMAND":
             self.swipe_detector.reset(require_release=True)
+            self.enter_detector.reset(require_release=True)
             return
+
+        if classify_enter_pose(right_observation[1]):
+            self.swipe_detector.reset(require_release=True)
+            self.right_status = "ENTER"
+            self.diagnostic_text = "RIGHT ENTER: index only"
+            if self.enter_detector.update(True, now):
+                self.hotkey("enter")
+                self._show_feedback("ENTER", now)
+            return
+
+        self.enter_detector.update(False, now)
 
         metrics = classify_swipe_pose(right_observation[1])
         if not metrics.is_swipe_pose:
@@ -227,7 +284,10 @@ class ShortcutControlController(DesktopControlController):
                 "mission_control" if action == SWIPE_UP else "app_switching"
             )
             if self._feature_enabled(feature_key):
-                self.hotkey(*SHORTCUT_KEYS[action])
+                if action == SWIPE_UP:
+                    self._show_mission_control()
+                else:
+                    self.hotkey(*SHORTCUT_KEYS[action])
                 self._show_feedback(SWIPE_LABELS[action], now)
             else:
                 self._show_feedback(f"{SWIPE_LABELS[action]} IS OFF", now)
