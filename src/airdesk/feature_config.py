@@ -38,6 +38,7 @@ FEATURE_DEFINITIONS = (
     FeatureDefinition("undo", "Undo", "Commands", True),
     FeatureDefinition("redo", "Redo", "Commands", True),
     FeatureDefinition("select_all", "Select All", "Commands", True),
+    FeatureDefinition("save_document", "Save Document", "Commands", True),
     FeatureDefinition("screenshot", "Screenshot", "Commands", True),
     FeatureDefinition("close_window", "Close Window", "Commands", True),
 )

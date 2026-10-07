@@ -27,9 +27,9 @@ CLICK_COOLDOWN_SECONDS = 0.45
 CLICK_POSE_GRACE_SECONDS = 0.10
 CLICK_RELEASE_SECONDS = 0.10
 
-SCROLL_DWELL_SECONDS = 0.18
-SCROLL_COOLDOWN_SECONDS = 0.10
-SCROLL_MOVEMENT_THRESHOLD = 0.18
+SCROLL_DWELL_SECONDS = 0.08
+SCROLL_COOLDOWN_SECONDS = 0.06
+SCROLL_MOVEMENT_THRESHOLD = 0.12
 SCROLL_STEPS = 3
 
 PRIMARY_PINCH = "PRIMARY_PINCH"
@@ -43,12 +43,12 @@ DRAG_END_ACTION = "DRAG_END"
 PRIMARY_PINCH_THRESHOLD = 0.34
 SECONDARY_PINCH_THRESHOLD = 0.20
 PRIMARY_MIDDLE_CLEARANCE = 0.24
-SECONDARY_PINCH_DWELL_SECONDS = 0.14
-DRAG_HOLD_SECONDS = 0.52
-QUICK_PINCH_MAX_SECONDS = 0.48
-DOUBLE_PINCH_INTERVAL_SECONDS = 0.48
-PALETTE_HOLD_SECONDS = 0.50
-PALETTE_SELECT_DWELL_SECONDS = 0.10
+SECONDARY_PINCH_DWELL_SECONDS = 0.08
+DRAG_HOLD_SECONDS = 0.32
+QUICK_PINCH_MAX_SECONDS = 0.30
+DOUBLE_PINCH_INTERVAL_SECONDS = 0.38
+PALETTE_HOLD_SECONDS = 0.30
+PALETTE_SELECT_DWELL_SECONDS = 0.05
 
 
 def _landmark_points(landmarks) -> np.ndarray:
@@ -137,6 +137,7 @@ class DesktopPinchMetrics:
     thumb_index_distance: float
     thumb_middle_distance: float
     four_fingers_extended: bool
+    palette_pose: bool
 
 
 def measure_desktop_pinch(landmarks) -> DesktopPinchMetrics:
@@ -148,6 +149,20 @@ def measure_desktop_pinch(landmarks) -> DesktopPinchMetrics:
     four_extended = all(
         finger_is_extended(points, wrist, *finger_joints)
         for finger_joints in FINGER_JOINTS
+    )
+    index_extended = finger_is_extended(points, wrist, *FINGER_JOINTS[0])
+    middle_extended = finger_is_extended(points, wrist, *FINGER_JOINTS[1])
+    ring_curled = finger_is_curled(points, wrist, *FINGER_JOINTS[2])
+    little_curled = finger_is_curled(points, wrist, *FINGER_JOINTS[3])
+    palm_center = points[[0, 5, 9, 13, 17]].mean(axis=0)
+    thumb_compactness = float(np.linalg.norm(points[4] - palm_center) / palm_size)
+    thumb_folded = thumb_compactness < 1.25
+    palette_pose = (
+        index_extended
+        and middle_extended
+        and ring_curled
+        and little_curled
+        and thumb_folded
     )
 
     if (
@@ -162,7 +177,13 @@ def measure_desktop_pinch(landmarks) -> DesktopPinchMetrics:
         pose = PRIMARY_PINCH
     else:
         pose = NO_PINCH
-    return DesktopPinchMetrics(pose, thumb_index, thumb_middle, four_extended)
+    return DesktopPinchMetrics(
+        pose,
+        thumb_index,
+        thumb_middle,
+        four_extended,
+        palette_pose,
+    )
 
 
 @dataclass
@@ -204,7 +225,6 @@ class PrimaryPinchDetector:
                     and now - self.first_click_at > DOUBLE_PINCH_INTERVAL_SECONDS
                 ):
                     self.first_click_at = None
-                    return SINGLE_CLICK_ACTION
                 return None
             if (
                 allow_drag
@@ -218,7 +238,9 @@ class PrimaryPinchDetector:
             return None
 
         if self.pinching:
-            duration = now - (self.pinch_started_at or now)
+            duration = now - (
+                self.pinch_started_at if self.pinch_started_at is not None else now
+            )
             self.pinching = False
             self.pinch_started_at = None
             if self.dragging:
@@ -234,13 +256,13 @@ class PrimaryPinchDetector:
                     self.first_click_at = None
                     return DOUBLE_CLICK_ACTION
                 self.first_click_at = now
+                return SINGLE_CLICK_ACTION
 
         if (
             self.first_click_at is not None
             and now - self.first_click_at > DOUBLE_PINCH_INTERVAL_SECONDS
         ):
             self.first_click_at = None
-            return SINGLE_CLICK_ACTION
         return None
 
 
@@ -464,12 +486,19 @@ class MacEscapeMonitor:
             raise RuntimeError(str(self._error))
 
     def _run(self) -> None:
+        event_tap = None
+        source = None
         try:
             import Quartz
 
             self._quartz = Quartz
 
             def callback(_proxy, event_type, event, _context):
+                if event_type in (
+                    Quartz.kCGEventTapDisabledByTimeout,
+                    Quartz.kCGEventTapDisabledByUserInput,
+                ):
+                    Quartz.CGEventTapEnable(event_tap, True)
                 if event_type == Quartz.kCGEventKeyDown:
                     key_code = Quartz.CGEventGetIntegerValueField(
                         event,
@@ -508,6 +537,14 @@ class MacEscapeMonitor:
         except Exception as error:
             self._error = error
             self._ready_event.set()
+        finally:
+            if event_tap is not None:
+                Quartz.CGEventTapEnable(event_tap, False)
+                if source is not None:
+                    Quartz.CFRunLoopRemoveSource(
+                        self._run_loop, source, Quartz.kCFRunLoopCommonModes
+                    )
+                Quartz.CFMachPortInvalidate(event_tap)
 
     def consume_escape(self) -> bool:
         if not self._escape_event.is_set():
@@ -531,8 +568,9 @@ class DesktopControlController(SystemMouseController):
         escape_monitor,
         feature_config=None,
         command_palette=None,
+        document_safety=None,
     ) -> None:
-        super().__init__(backend)
+        super().__init__(backend, document_safety=document_safety)
         self.escape_monitor = escape_monitor
         self.feature_config = feature_config
         self.command_palette = command_palette
@@ -545,6 +583,7 @@ class DesktopControlController(SystemMouseController):
         self.right_status = None
         self._feedback_text = ""
         self._feedback_until = 0.0
+        self._gesture_guard_until = 0.0
         self.diagnostic_text = "RIGHT CLICK: waiting for hand"
 
     @property
@@ -554,10 +593,18 @@ class DesktopControlController(SystemMouseController):
         return self._feedback_text
 
     def _show_feedback(self, text: str, now: float) -> None:
-        mode = "ACTIVE" if self.enabled else "PREVIEW"
+        mode = "LIVE" if self.enabled else "STOPPED"
         self._feedback_text = f"{mode}: {text}"
         self._feedback_until = now + 0.8
         print(self._feedback_text)
+
+    def guard_actions_until(self, deadline: float) -> None:
+        """Keep LIVE output armed while suppressing transitional gestures."""
+        self._gesture_guard_until = max(self._gesture_guard_until, deadline)
+        self.reset_actions(require_release=True)
+
+    def actions_guarded(self, now: float) -> bool:
+        return now < self._gesture_guard_until
 
     def _feature_enabled(self, key: str) -> bool:
         if self.feature_config is None:
@@ -627,17 +674,27 @@ class DesktopControlController(SystemMouseController):
                 if command.key not in enabled_keys:
                     self._show_feedback(f"{command.label.upper()} IS OFF", now)
                 else:
-                    self.hotkey(*command.shortcut)
-                    self._show_feedback(command.label.upper(), now)
+                    if command.key == "save_document":
+                        succeeded = self.save_document()
+                    else:
+                        succeeded = self.hotkey(*command.shortcut)
+                    if succeeded:
+                        self._show_feedback(command.label.upper(), now)
                     self._close_palette()
                     self.primary_pinch_detector.reset(require_release=True)
             return True
 
-        four_finger_pose = metrics.four_fingers_extended and metrics.pose == NO_PINCH
+        palette_pose = metrics.palette_pose and metrics.pose == NO_PINCH
+        if palette_pose and (
+            self.primary_pinch_detector.pinching
+            or self.primary_pinch_detector.first_click_at is not None
+        ):
+            self.palette_open_detector.reset()
+            return False
         if not self._feature_enabled("air_command_palette"):
             self.palette_open_detector.reset()
             return False
-        if self.palette_open_detector.update(four_finger_pose, now):
+        if self.palette_open_detector.update(palette_pose, now):
             self.primary_pinch_detector.reset(require_release=False)
             self.secondary_pinch_detector.reset(require_release=False)
             self.palette_select_detector.reset(require_release=False)
@@ -645,7 +702,9 @@ class DesktopControlController(SystemMouseController):
             self.right_status = "COMMAND"
             self._show_feedback("COMMAND PALETTE", now)
             return True
-        return four_finger_pose
+        # Until the palette actually opens, a released pinch still needs to
+        # finish its click/drag. An open palm is a natural pinch release pose.
+        return False
 
     def _update_right_hand(
         self,
@@ -677,6 +736,10 @@ class DesktopControlController(SystemMouseController):
             cursor_position,
             preview_size,
         ):
+            # Opening the hand ends a drag immediately, even while the
+            # palette's opening dwell is still in progress.
+            self._release_drag()
+            self.primary_pinch_detector.reset(require_release=True)
             self.diagnostic_text = "RIGHT COMMAND: use left pointer, right pinch selects"
             return
 
@@ -719,7 +782,7 @@ class DesktopControlController(SystemMouseController):
                     self._show_feedback("LEFT CLICK IS OFF", now)
             elif action == DOUBLE_CLICK_ACTION:
                 if self._feature_enabled("double_click"):
-                    self.double_click("left")
+                    self.second_click("left")
                     self._show_feedback("DOUBLE CLICK", now)
             elif action == DRAG_START_ACTION:
                 self.mouse_down("left")
@@ -746,6 +809,13 @@ class DesktopControlController(SystemMouseController):
         if self.escape_monitor.consume_escape():
             self.disable("global Esc pressed")
             self._show_feedback("SAFE - ESC", now)
+
+        if self.actions_guarded(now):
+            self.reset_actions(require_release=True)
+            self.left_status = None
+            self.right_status = None
+            self.diagnostic_text = "LIVE: lower both hands to re-arm gestures"
+            return
 
         self._update_right_hand(
             observations,

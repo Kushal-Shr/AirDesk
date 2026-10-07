@@ -59,6 +59,24 @@ class InvalidScreenBackend(FakeMouseBackend):
         return 0, 0
 
 
+class FakeDocumentSafety:
+    def __init__(self):
+        self.insertions = []
+        self.pending_save = None
+        self.closed = False
+
+    def after_text_insert(self, text, save_action):
+        self.insertions.append(text)
+        self.pending_save = save_action
+
+    def save_now(self, save_action):
+        self.pending_save = None
+        return save_action()
+
+    def close(self):
+        self.closed = True
+
+
 class ScreenMappingTests(unittest.TestCase):
     def test_preview_edges_map_to_screen_edges(self):
         self.assertEqual(
@@ -119,6 +137,31 @@ class SystemMouseControllerTests(unittest.TestCase):
         )
         self.assertFalse(self.controller.enabled)
 
+    def test_corner_fail_safe_cannot_prevent_mouse_release(self):
+        def guarded_release(button, _pause):
+            if self.backend.FAILSAFE:
+                raise self.backend.FailSafeException()
+            self.backend.button_events.append(("up", button, _pause))
+
+        self.controller.toggle()
+        self.controller.mouse_down()
+        self.backend.mouseUp = guarded_release
+        self.controller.disable("corner stop")
+        self.assertEqual(self.backend.button_events[-1], ("up", "left", False))
+        self.assertTrue(self.backend.FAILSAFE)
+
+    def test_moving_while_held_sends_drag_events_without_another_mouse_down(self):
+        from unittest.mock import Mock
+        self.backend.dragTo = Mock()
+        self.controller.toggle()
+        self.controller.mouse_down()
+        self.controller.move_from_preview((999, 499), (1000, 500))
+        self.backend.dragTo.assert_called_once_with(
+            1919, 1079, duration=0, button="left", mouseDownUp=False, _pause=False
+        )
+        self.assertEqual(self.backend.moves, [])
+        self.assertEqual(self.backend.button_events, [("down", "left", False)])
+
     def test_click_and_scroll_require_active_control(self):
         self.assertFalse(self.controller.click("left"))
         self.assertFalse(self.controller.scroll(3))
@@ -136,6 +179,27 @@ class SystemMouseControllerTests(unittest.TestCase):
         self.assertFalse(self.controller.commit_text(""))
         self.assertTrue(self.controller.commit_text("A"))
         self.assertEqual(self.backend.writes, [("A", 0.0, False)])
+
+    def test_successful_text_commit_records_and_schedules_document_save(self):
+        safety = FakeDocumentSafety()
+        controller = SystemMouseController(self.backend, document_safety=safety)
+
+        self.assertTrue(controller.commit_text("Recovered text "))
+        self.assertEqual(safety.insertions, ["Recovered text "])
+        self.assertEqual(self.backend.hotkeys, [])
+        self.assertTrue(safety.pending_save())
+        self.assertEqual(self.backend.hotkeys, [(('command', 's'), False)])
+
+    def test_manual_document_save_uses_command_s_and_closes_safety_manager(self):
+        safety = FakeDocumentSafety()
+        controller = SystemMouseController(self.backend, document_safety=safety)
+        controller.toggle()
+
+        self.assertTrue(controller.save_document())
+        controller.close()
+
+        self.assertEqual(self.backend.hotkeys, [(('command', 's'), False)])
+        self.assertTrue(safety.closed)
 
 
 if __name__ == "__main__":

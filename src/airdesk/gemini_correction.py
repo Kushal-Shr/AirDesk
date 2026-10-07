@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import os
 
 import cv2
@@ -12,9 +13,36 @@ import numpy as np
 from .segmented_recognition import MERGED_CLASSES
 
 
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
-DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-3.8-flash"
 MAX_CORRECTED_CHARACTERS = 200
+
+
+def gemini_error_message(error: Exception) -> str:
+    """Keep actionable errors visible without printing request credentials."""
+    code = getattr(error, "code", None)
+    if code in (401, 403):
+        return "API key rejected or access denied; check GEMINI_API_KEY"
+    if code == 429:
+        return "quota/rate limit reached; wait and retry"
+    if code == 404:
+        return "model unavailable; check GEMINI_MODEL"
+    if code in (408, 504):
+        return "request timed out; thumbs-up to retry"
+    if isinstance(code, int) and 500 <= code < 600:
+        return f"temporary service error ({code}); thumbs-up to retry"
+    return f"{type(error).__name__}; check connection and retry with thumbs-up"
+
+
+def _can_try_fallback(error: Exception) -> bool:
+    import httpx
+
+    code = getattr(error, "code", None)
+    return (
+        code in (404, 408, 429)
+        or (isinstance(code, int) and 500 <= code < 600)
+        or isinstance(error, (httpx.TransportError, TimeoutError, ConnectionError))
+    )
 
 
 @dataclass(frozen=True)
@@ -87,6 +115,7 @@ class GeminiCorrectionClient:
         self.model = model
         self.fallback_model = fallback_model
         self.last_model_used = None
+        self._preferred_model = model
         self._client = client
 
     @classmethod
@@ -112,7 +141,10 @@ class GeminiCorrectionClient:
                 raise RuntimeError(
                     "Gemini support needs google-genai; install requirements.txt"
                 ) from error
-            self._client = genai.Client(api_key=self.api_key)
+            self._client = genai.Client(
+                api_key=self.api_key,
+                http_options={"timeout": 10000, "retry_options": {"attempts": 1}},
+            )
         return self._client
 
     def verify_ready(self) -> None:
@@ -149,16 +181,23 @@ class GeminiCorrectionClient:
             response_mime_type="application/json",
             response_json_schema=response_schema,
         )
+        primary = self._preferred_model
+        fallback = self.fallback_model if primary == self.model else self.model
+        self.last_model_used = None
         try:
-            response = self._generate(self.model, contents, config)
+            response = self._generate(primary, contents, config)
         except Exception as error:
             if (
-                getattr(error, "code", None) not in {429, 503}
-                or self.fallback_model == self.model
+                not _can_try_fallback(error)
+                or fallback == primary
             ):
                 raise
-            response = self._generate(self.fallback_model, contents, config)
-        return self._parse_response(response.text)
+            print(f"Gemini {primary}: {gemini_error_message(error)}. Trying {fallback}.", flush=True)
+            response = self._generate(fallback, contents, config)
+        result = self._parse_response(response.text)
+        # A working fallback should not pay the primary's timeout every line.
+        self._preferred_model = self.last_model_used
+        return result
 
     def _generate(self, model, contents, config):
         response = self._get_client().models.generate_content(
@@ -173,13 +212,22 @@ class GeminiCorrectionClient:
     def _parse_response(output_text: str) -> GeminiCorrectionResult:
         try:
             payload = json.loads(output_text)
-            text = str(payload["text"])
-            confidence = float(payload["confidence"])
-            explanation = str(payload["explanation"])
+            text = payload["text"]
+            confidence = payload["confidence"]
+            explanation = payload["explanation"]
+            if (
+                not isinstance(text, str)
+                or not isinstance(explanation, str)
+                or isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not math.isfinite(confidence)
+                or not 0 <= confidence <= 1
+            ):
+                raise ValueError("invalid field types or confidence")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise RuntimeError("Gemini returned an invalid correction response") from error
         allowed = set(MERGED_CLASSES + " ")
-        if not text or len(text) > MAX_CORRECTED_CHARACTERS:
+        if not text.strip() or len(text) > MAX_CORRECTED_CHARACTERS:
             raise RuntimeError("Gemini returned an empty or excessively long transcription")
         if any(character not in allowed for character in text):
             raise RuntimeError("Gemini returned characters unsupported by AirDesk")

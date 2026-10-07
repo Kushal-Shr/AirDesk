@@ -19,7 +19,7 @@ from .hand_landmarks import (
 
 
 WINDOW_NAME = "AirDesk - Hand Locks"
-UNLOCK_DELAY_SECONDS = 0.25
+UNLOCK_DELAY_SECONDS = 0.12
 
 # Each tuple contains a finger's MCP joint, PIP joint, and fingertip.
 FINGER_JOINTS = (
@@ -126,7 +126,7 @@ def classify_fist(landmarks) -> FistMetrics:
     )
 
     # Requiring all four fingers prevents an index-point pose from becoming a fist.
-    # The 0.25-second unlock delay absorbs brief landmark misses on a real fist.
+    # A short unlock delay absorbs brief landmark misses on a real fist.
     # A raised thumb makes this an intentional thumbs-up, not a closed-fist
     # safety lock. All other compact four-finger poses remain locked.
     is_closed = (

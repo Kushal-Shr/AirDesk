@@ -32,7 +32,7 @@ WINDOW_NAME = "AirDesk - Virtual Cursor"
 ACTIVE_MARGIN_X = 0.20
 ACTIVE_MARGIN_TOP = 0.28
 ACTIVE_MARGIN_BOTTOM = 0.12
-CURSOR_SMOOTHING = 0.22
+CURSOR_SMOOTHING = 0.50
 MIN_HANDEDNESS_CONFIDENCE = 0.65
 # This camera reports mirrored MediaPipe handedness for the user's setup.
 # Start corrected so anatomical LEFT and RIGHT work without pressing H.
@@ -247,24 +247,112 @@ def map_to_preview(
     return round(float(mapped_x)), round(float(mapped_y))
 
 
+APPLE_BLUE = (255, 132, 10)
+APPLE_GREEN = (88, 209, 48)
+APPLE_ORANGE = (10, 149, 255)
+APPLE_RED = (69, 68, 255)
+GLASS_WHITE = (246, 246, 246)
+
+
+def _rounded_rectangle(image, start, end, color, radius=16, thickness=-1) -> None:
+    """Draw a rounded rectangle using only portable OpenCV primitives."""
+    x1, y1 = start
+    x2, y2 = end
+    radius = max(1, min(radius, (x2 - x1) // 2, (y2 - y1) // 2))
+    if thickness < 0:
+        cv2.rectangle(image, (x1 + radius, y1), (x2 - radius, y2), color, -1)
+        cv2.rectangle(image, (x1, y1 + radius), (x2, y2 - radius), color, -1)
+        for center in (
+            (x1 + radius, y1 + radius),
+            (x2 - radius, y1 + radius),
+            (x1 + radius, y2 - radius),
+            (x2 - radius, y2 - radius),
+        ):
+            cv2.circle(image, center, radius, color, -1, cv2.LINE_AA)
+        return
+    cv2.line(image, (x1 + radius, y1), (x2 - radius, y1), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (x1 + radius, y2), (x2 - radius, y2), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (x1, y1 + radius), (x1, y2 - radius), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (x2, y1 + radius), (x2, y2 - radius), color, thickness, cv2.LINE_AA)
+    for center, start_angle in (
+        ((x1 + radius, y1 + radius), 180),
+        ((x2 - radius, y1 + radius), 270),
+        ((x2 - radius, y2 - radius), 0),
+        ((x1 + radius, y2 - radius), 90),
+    ):
+        cv2.ellipse(
+            image,
+            center,
+            (radius, radius),
+            0,
+            start_angle,
+            start_angle + 90,
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+
+
+def _draw_glass_card(frame, start, end, radius=20, tint=(28, 28, 30)) -> None:
+    """Blur camera content beneath an adaptive, softly bordered control card."""
+    frame_height, frame_width = frame.shape[:2]
+    x1, y1 = max(0, start[0]), max(0, start[1])
+    x2, y2 = min(frame_width - 1, end[0]), min(frame_height - 1, end[1])
+    if x2 <= x1 or y2 <= y1:
+        return
+    region = frame[y1:y2, x1:x2]
+    blurred = cv2.GaussianBlur(region, (0, 0), 7.0)
+    tint_layer = np.full_like(region, tint)
+    glass = cv2.addWeighted(blurred, 0.64, tint_layer, 0.36, 0)
+    mask = np.zeros(region.shape[:2], dtype=np.uint8)
+    _rounded_rectangle(mask, (0, 0), (x2 - x1 - 1, y2 - y1 - 1), 255, radius, -1)
+    region[mask > 0] = glass[mask > 0]
+    _rounded_rectangle(frame, (x1, y1), (x2, y2), (205, 205, 210), radius, 1)
+    cv2.line(
+        frame,
+        (x1 + radius, y1 + 1),
+        (x2 - radius, y1 + 1),
+        (245, 245, 248),
+        1,
+        cv2.LINE_AA,
+    )
+
+
+def _draw_status_pill(frame, text, origin, color) -> None:
+    text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.46, 1)
+    x, y = origin
+    width = text_size[0] + 24
+    overlay = frame.copy()
+    _rounded_rectangle(overlay, (x, y), (x + width, y + 26), color, 13, -1)
+    cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, frame)
+    cv2.putText(
+        frame,
+        text,
+        (x + 12, y + 18),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.46,
+        GLASS_WHITE,
+        1,
+        cv2.LINE_AA,
+    )
+
+
 def draw_active_area(frame, active_area: ActiveRectangle, enabled: bool) -> None:
-    color = (0, 255, 0) if enabled else (130, 130, 130)
-    cv2.rectangle(
+    color = APPLE_BLUE if enabled else (150, 150, 155)
+    _rounded_rectangle(
         frame,
         (active_area.left, active_area.top),
         (active_area.right, active_area.bottom),
         color,
+        18,
         2,
     )
-    cv2.putText(
+    label = "POINTER AREA"
+    _draw_status_pill(
         frame,
-        "LEFT-HAND ACTIVE AREA",
-        (active_area.left + 8, active_area.top + 24),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        color,
-        2,
-        cv2.LINE_AA,
+        label,
+        (active_area.left + 10, active_area.top + 10),
+        (78, 78, 82),
     )
 
 
@@ -281,10 +369,8 @@ def draw_status_panel(
     left_action_status: str | None = None,
     right_action_status: str | None = None,
 ) -> None:
-    overlay = frame.copy()
-    panel_right = min(frame.shape[1] - 10, 500)
-    cv2.rectangle(overlay, (10, 10), (panel_right, 205), (20, 20, 20), -1)
-    cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, frame)
+    panel_right = min(frame.shape[1] - 12, 470)
+    _draw_glass_card(frame, (12, 12), (panel_right, 180), radius=22)
 
     if lock_states["LEFT"].locked:
         left_status = "LOCKED"
@@ -301,39 +387,65 @@ def draw_status_panel(
     left_suffix = " (NOT SEEN)" if "LEFT" not in seen_sides else ""
     right_suffix = " (NOT SEEN)" if "RIGHT" not in seen_sides else ""
 
-    airdesk_status = "ACTIVE" if system_control_active else "SAFE PREVIEW"
-    rows = (
-        (f"LEFT: {left_status}{left_suffix}", lock_states["LEFT"].locked),
-        (f"RIGHT: {right_status}{right_suffix}", lock_states["RIGHT"].locked),
-        ("MODE: DESKTOP", False),
-        (f"AIRDESK: {airdesk_status}", system_control_active),
-        ("HAND LABELS: SWAPPED (FIXED)", False),
+    airdesk_status = "LIVE" if system_control_active else "STOPPED"
+    cv2.putText(
+        frame,
+        "AirDesk",
+        (28, 44),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.76,
+        GLASS_WHITE,
+        2,
+        cv2.LINE_AA,
     )
-    for row_index, (text, is_locked) in enumerate(rows):
-        color = (0, 80, 255) if is_locked else (0, 255, 0)
-        cv2.putText(
-            frame,
-            text,
-            (24, 36 + row_index * 32),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.64,
-            color,
-            2,
-            cv2.LINE_AA,
-        )
+    status_color = APPLE_GREEN if system_control_active else APPLE_RED
+    _draw_status_pill(frame, airdesk_status, (panel_right - 112, 23), status_color)
+
+    left_color = APPLE_RED if lock_states["LEFT"].locked else APPLE_BLUE
+    right_color = APPLE_RED if lock_states["RIGHT"].locked else APPLE_BLUE
+    cv2.putText(
+        frame,
+        f"LEFT   {left_status}{left_suffix}",
+        (28, 78),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        left_color,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        f"RIGHT  {right_status}{right_suffix}",
+        (28, 108),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        right_color,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        "DESKTOP  •  HANDS AUTO-CORRECTED",
+        (28, 136),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.43,
+        (205, 205, 210),
+        1,
+        cv2.LINE_AA,
+    )
 
     controls = "Q: quit"
     if control_panel_available:
         controls += " | P: guide"
     if system_control_available:
-        controls += " | M: mouse | Esc: SAFE"
+        controls += " | M: mouse | Esc: STOP"
     cv2.putText(
         frame,
         f"FPS: {fps:.1f} | {controls}",
-        (24, 197),
+        (28, 163),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.47,
-        (255, 255, 255),
+        0.42,
+        (220, 220, 224),
         1,
         cv2.LINE_AA,
     )
@@ -345,17 +457,41 @@ def draw_virtual_cursor(
     cursor_position: tuple[int, int],
 ) -> None:
     """Distinguish the raw fingertip sample from the mapped virtual cursor."""
-    cv2.circle(frame, raw_index_position, 7, (255, 0, 255), -1, cv2.LINE_AA)
+    cv2.circle(frame, raw_index_position, 6, APPLE_ORANGE, -1, cv2.LINE_AA)
     cv2.line(
         frame,
         raw_index_position,
         cursor_position,
-        (150, 150, 150),
+        (185, 185, 190),
         1,
         cv2.LINE_AA,
     )
-    cv2.circle(frame, cursor_position, 15, (255, 255, 255), 3, cv2.LINE_AA)
-    cv2.circle(frame, cursor_position, 10, (255, 255, 0), -1, cv2.LINE_AA)
+    cv2.circle(frame, cursor_position, 16, GLASS_WHITE, 3, cv2.LINE_AA)
+    cv2.circle(frame, cursor_position, 10, APPLE_BLUE, -1, cv2.LINE_AA)
+
+
+def draw_glass_message(frame, text: str, baseline_y: int, *, emphasized=False) -> None:
+    """Render transient diagnostics as compact glass control capsules."""
+    scale = 0.56 if emphasized else 0.46
+    thickness = 2 if emphasized else 1
+    text_size, _ = cv2.getTextSize(
+        text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness
+    )
+    width = min(text_size[0] + 30, frame.shape[1] - 24)
+    left = max(12, (frame.shape[1] - width) // 2)
+    top = max(4, baseline_y - 25)
+    _draw_glass_card(frame, (left, top), (left + width, baseline_y + 8), radius=16)
+    color = APPLE_BLUE if emphasized else (230, 230, 234)
+    cv2.putText(
+        frame,
+        text,
+        (left + 15, baseline_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        scale,
+        color,
+        thickness,
+        cv2.LINE_AA,
+    )
 
 
 def run_virtual_cursor(
@@ -364,12 +500,29 @@ def run_virtual_cursor(
     mode_controller=None,
     control_panel=None,
 ) -> int:
+    """Own controllers for the entire run, including early startup failures."""
+    try:
+        return _run_virtual_cursor(system_mouse, window_name, mode_controller, control_panel)
+    except KeyboardInterrupt:
+        print("AirDesk closed.")
+        return 0
+    except Exception as error:
+        print(f"AirDesk stopped: {error}")
+        return 1
+    finally:
+        for resource in (system_mouse, mode_controller, control_panel):
+            if resource is not None:
+                try:
+                    resource.close()
+                except Exception as error:
+                    print(f"AirDesk cleanup warning: {error}")
+
+
+def _run_virtual_cursor(system_mouse, window_name, mode_controller, control_panel) -> int:
     """Run Stage 4, optionally with the explicit Stage 5 mouse adapter."""
     if not MODEL_PATH.exists():
         print("The Hand Landmarker model is missing.")
         print("Run: python scripts/download_hand_model.py")
-        if control_panel is not None:
-            control_panel.close()
         return 1
 
     camera_device = cv2.VideoCapture(CAMERA_INDEX)
@@ -379,8 +532,6 @@ def run_virtual_cursor(
             "for the app running Python, then try again."
         )
         camera_device.release()
-        if control_panel is not None:
-            control_panel.close()
         return 1
     configure_camera(camera_device)
     camera = LatestFrameCapture(camera_device).start()
@@ -421,6 +572,17 @@ def run_virtual_cursor(
                 result = landmarker.detect_for_video(media_pipe_image, timestamp_ms)
 
                 current_time = time.perf_counter()
+                # Stop before moving the pointer or polling completed OCR.
+                escape_monitor = getattr(system_mouse, "escape_monitor", None)
+                if escape_monitor is not None and escape_monitor.consume_escape():
+                    system_mouse.disable("global Esc pressed")
+                    cursor_smoother.reset()
+                    if mode_controller is not None:
+                        if mode_controller.is_overlay_active:
+                            mode_controller._set_mode(
+                                "DESKTOP", system_mouse, resume_desktop=False
+                            )
+                        mode_controller.emergency_stop()
                 frame_seconds = current_time - previous_time
                 previous_time = current_time
                 instant_fps = 1.0 / frame_seconds if frame_seconds > 0 else 0.0
@@ -459,19 +621,6 @@ def run_virtual_cursor(
                         state.update(metrics.is_closed, True, current_time)
 
                 if mode_controller is not None:
-                    was_overlay_active = getattr(
-                        mode_controller,
-                        "is_overlay_active",
-                        mode_controller.is_whiteboard,
-                    )
-                    escape_monitor = getattr(system_mouse, "escape_monitor", None)
-                    if (
-                        was_overlay_active
-                        and escape_monitor is not None
-                        and escape_monitor.consume_escape()
-                    ):
-                        system_mouse.disable("global Esc pressed")
-                        mode_controller.emergency_stop()
                     mode_controller.update(
                         observations,
                         lock_states,
@@ -509,6 +658,7 @@ def run_virtual_cursor(
                                         left_locked=lock_states["LEFT"].locked,
                                         right_locked=lock_states["RIGHT"].locked,
                                         cursor_visible=False,
+                                        writing_active=True,
                                         left_action=None,
                                         right_action=None,
                                         fps=smoothed_fps,
@@ -614,26 +764,17 @@ def run_virtual_cursor(
                     else ""
                 )
                 if diagnostic_text:
-                    cv2.putText(
+                    draw_glass_message(
                         frame,
                         diagnostic_text,
-                        (20, frame_height - 62),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.52,
-                        (255, 255, 255),
-                        1,
-                        cv2.LINE_AA,
+                        frame_height - 62,
                     )
                 if feedback_text:
-                    cv2.putText(
+                    draw_glass_message(
                         frame,
                         feedback_text,
-                        (max(20, frame_width // 2 - 150), frame_height - 30),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.75,
-                        (0, 255, 255),
-                        2,
-                        cv2.LINE_AA,
+                        frame_height - 27,
+                        emphasized=True,
                     )
 
                 if mode_controller is not None:
@@ -693,14 +834,12 @@ def run_virtual_cursor(
                 if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                     break
     finally:
-        if mode_controller is not None:
-            mode_controller.close()
-        if system_mouse is not None:
-            system_mouse.close()
-        if control_panel is not None:
-            control_panel.close()
-        camera.release()
-        cv2.destroyAllWindows()
+        try:
+            if system_mouse is not None:
+                system_mouse.disable("camera loop stopped")
+        finally:
+            camera.release()
+            cv2.destroyAllWindows()
 
     return 0
 

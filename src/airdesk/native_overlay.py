@@ -174,6 +174,15 @@ class NativeInkOverlay:
                     0.16, 0.47, 1.0, 0.96
                 ).setStroke()
                 for stroke in view_self.ink_strokes:
+                    if len(stroke) == 1:
+                        point_x, point_y = stroke[0]
+                        dot = kit["NSBezierPath"].bezierPathWithOvalInRect_(
+                            kit["NSMakeRect"](point_x - 3, height - point_y - 3, 6, 6)
+                        )
+                        kit["NSColor"].colorWithCalibratedRed_green_blue_alpha_(
+                            0.16, 0.47, 1.0, 0.96
+                        ).setFill()
+                        dot.fill()
                     if len(stroke) < 2:
                         continue
                     path = kit["NSBezierPath"].bezierPath()
@@ -253,7 +262,9 @@ class NativeInkOverlay:
         self._kit = kit
         self._app = kit["NSApplication"].sharedApplication()
         self._app.setActivationPolicy_(kit["NSApplicationActivationPolicyAccessory"])
-        screen_frame = kit["NSScreen"].mainScreen().frame()
+        # Match PyAutoGUI/Quartz's primary display even if another screen has
+        # the focused window (for example, when a projector is connected).
+        screen_frame = kit["NSScreen"].screens()[0].frame()
         self.size = (round(screen_frame.size.width), round(screen_frame.size.height))
         style = kit["NSWindowStyleMaskBorderless"] | kit["NSWindowStyleMaskNonactivatingPanel"]
         self._panel = NonActivatingPanel.alloc().initWithContentRect_styleMask_backing_defer_(

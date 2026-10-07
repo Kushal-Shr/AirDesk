@@ -18,24 +18,27 @@ from .hand_lock import (
     thumb_is_raised,
 )
 from .native_overlay import MemoryInkOverlay
+from .system_shortcuts import classify_enter_pose
 from .virtual_cursor import ActiveRectangle, map_to_preview
 
 
-MODE_HOLD_SECONDS = 1.0
-CLEAR_HOLD_SECONDS = 1.0
+MODE_HOLD_SECONDS = 0.60
+CLEAR_HOLD_SECONDS = 0.55
 PEN_PINCH_THRESHOLD = 0.24
 GESTURE_PINCH_THRESHOLD = 0.38
 MIN_DRAW_FINGER_OPENNESS = 0.80
 PEN_THICKNESS = 6
-ACCEPT_HOLD_SECONDS = 0.65
-SPACE_HOLD_SECONDS = 0.65
-UNDO_HOLD_SECONDS = 0.65
-INSERT_HOLD_SECONDS = 0.90
-MODE_SWITCH_HOLD_SECONDS = 0.80
+ACCEPT_HOLD_SECONDS = 0.35
+SPACE_HOLD_SECONDS = 0.35
+UNDO_HOLD_SECONDS = 0.40
+INSERT_HOLD_SECONDS = 0.55
+MODE_SWITCH_HOLD_SECONDS = 0.45
+ENTER_HOLD_SECONDS = 0.30
 MAX_SENTENCE_CHARACTERS = 160
-LINE_IDLE_SECONDS = 3.0
+LINE_IDLE_SECONDS = 2.0
 MIN_LINE_CONFIDENCE = 0.90
 MIN_GEMINI_INSERT_CONFIDENCE = 0.90
+DESKTOP_REARM_DELAY_SECONDS = 0.45
 
 
 def text_with_trailing_space(text: str) -> str:
@@ -271,6 +274,7 @@ class AirWritingController:
         self.undo_hold = HoldLatch(UNDO_HOLD_SECONDS)
         self.insert_hold = HoldLatch(INSERT_HOLD_SECONDS)
         self.mode_switch_hold = HoldLatch(MODE_SWITCH_HOLD_SECONDS)
+        self.enter_hold = HoldLatch(ENTER_HOLD_SECONDS)
         self.sentence_mode = sentence_mode
         self.sentence = SentenceBuffer()
         self.recognition_feedback = ""
@@ -313,6 +317,7 @@ class AirWritingController:
         self.undo_hold.reset()
         self.insert_hold.reset()
         self.mode_switch_hold.reset()
+        self.enter_hold.reset()
 
     def _configure_recognition_mode(self) -> None:
         self.recognition_mode = getattr(self.recognizer, "mode", "uppercase")
@@ -364,11 +369,14 @@ class AirWritingController:
         )
         return pen_point, screen_point
 
-    def _set_mode(self, mode: str, system_controller) -> None:
+    def _set_mode(
+        self, mode: str, system_controller, *, resume_desktop: bool = True
+    ) -> None:
         self.mode = mode
         self.reset_transient()
-        if system_controller is not None:
-            system_controller.disable(f"entered {mode.lower()} mode")
+        # The camera loop already skips desktop mouse/shortcut gestures while
+        # this overlay is active. Keep the controller's LIVE state unchanged
+        # so focused applications never see an OFF/ON reset around Air Write.
         if self.is_overlay_active:
             self.text_output_allowed = True
             if self.writing_guide is not None:
@@ -377,7 +385,11 @@ class AirWritingController:
         else:
             self.overlay.clear_guide()
             self.overlay.hide()
-        print(f"AirDesk mode: {mode} (real system output is OFF)")
+        output = (
+            "LIVE" if system_controller is not None and system_controller.enabled
+            else "STOPPED"
+        )
+        print(f"AirDesk overlay: {mode} (system output remains {output})")
 
     def _update_status(self, lock_states) -> None:
         right = "DRAW" if self.pen_down else (
@@ -397,6 +409,8 @@ class AirWritingController:
             left = f"UNDO {round(self.undo_hold.progress * 100)}%"
         if self.mode_switch_hold.progress > 0 and not self.mode_switch_hold.latched:
             left = f"MODE {round(self.mode_switch_hold.progress * 100)}%"
+        if self.enter_hold.progress > 0 and not self.enter_hold.latched:
+            right = f"ENTER {round(self.enter_hold.progress * 100)}%"
         feedback = f"  |  {self.recognition_feedback}" if self.recognition_feedback else ""
         controls = (
             "R👍 char | L👍 space | 👍👍 insert | L✌ mode | L pinch undo"
@@ -422,6 +436,8 @@ class AirWritingController:
         """Record one synchronized canvas/overlay point for later undo."""
         if not self.pen_down:
             self.canvas_strokes.append([])
+            cv2.circle(self.canvas, pen_point, PEN_THICKNESS // 2,
+                       (20, 20, 20), -1, cv2.LINE_AA)
         self.canvas_strokes[-1].append(pen_point)
         if self.previous_pen_point is not None:
             cv2.line(
@@ -441,6 +457,9 @@ class AirWritingController:
         """Re-rasterize retained vector strokes after removing the newest one."""
         self.canvas.fill(255)
         for stroke in self.canvas_strokes:
+            if stroke:
+                cv2.circle(self.canvas, stroke[0], PEN_THICKNESS // 2,
+                           (20, 20, 20), -1, cv2.LINE_AA)
             for start, end in zip(stroke, stroke[1:]):
                 cv2.line(
                     self.canvas,
@@ -675,11 +694,14 @@ class AirWritingController:
     def emergency_stop(self) -> None:
         """Prevent confirmed text output after the global Esc safety stop."""
         self.text_output_allowed = False
+        self.mode_hold.reset()
+        self.mode_hold.latched = True
         self.accept_hold.reset()
         self.space_hold.reset()
         self.undo_hold.reset()
         self.insert_hold.reset()
         self.mode_switch_hold.reset()
+        self.enter_hold.reset()
         self._lift_pen()
         self.overlay.hide_cursor()
         self.recognition_feedback = "SAFE — ESC; re-enter Air Write to re-arm"
@@ -734,6 +756,7 @@ class WholeLineWritingController(AirWritingController):
         self._gemini_future_revision = None
         self._gemini_local_text = ""
         self.last_gemini_result = None
+        self.exit_after_insert = False
 
     def _cancel_gemini_review(self) -> None:
         self._gemini_revision += 1
@@ -742,6 +765,18 @@ class WholeLineWritingController(AirWritingController):
         self._gemini_future = None
         self._gemini_future_revision = None
         self._gemini_local_text = ""
+
+    def _set_mode(
+        self, mode: str, system_controller, *, resume_desktop: bool = True
+    ) -> None:
+        self.exit_after_insert = False
+        self._cancel_gemini_review()
+        # Returning to an old line must not silently insert it immediately.
+        # A new stroke or a thumbs-up explicitly resumes recognition.
+        self.last_ink_at = None
+        super()._set_mode(
+            mode, system_controller, resume_desktop=resume_desktop
+        )
 
     def _clear_writing(self) -> None:
         if hasattr(self, "_gemini_revision"):
@@ -768,6 +803,7 @@ class WholeLineWritingController(AirWritingController):
         self.recognition_feedback = (
             f"GEMINI REVIEWING LOW-CONFIDENCE LOCAL: {local_result.text}"
         )
+        print("Gemini: reviewing handwriting...", flush=True)
         return True
 
     def _poll_gemini_review(self, system_controller) -> None:
@@ -784,20 +820,26 @@ class WholeLineWritingController(AirWritingController):
         try:
             result = future.result()
         except Exception as error:
-            self.recognition_feedback = f"GEMINI UNAVAILABLE — LOCAL KEPT: {error}"
+            from .gemini_correction import gemini_error_message
+            self.recognition_feedback = f"GEMINI: {gemini_error_message(error)} — line kept"
+            self.exit_after_insert = False
+            print(self.recognition_feedback, flush=True)
             return
         self.last_gemini_result = result
+        print(f"Gemini: review complete ({result.confidence:.0%} confidence).", flush=True)
         self.overlay.set_preview(result.text)
         if not self.text_output_allowed:
             self.recognition_feedback = (
                 "GEMINI RESULT READY — INSERT BLOCKED BY ESC; line kept"
             )
+            self.exit_after_insert = False
             return
         if result.confidence < MIN_GEMINI_INSERT_CONFIDENCE:
             self.recognition_feedback = (
                 f"GEMINI LOW CONFIDENCE {round(result.confidence * 100)}% — "
                 "PREVIEW ONLY"
             )
+            self.exit_after_insert = False
             return
         if system_controller.commit_text(text_with_trailing_space(result.text)):
             self.last_inserted_text = result.text
@@ -809,6 +851,7 @@ class WholeLineWritingController(AirWritingController):
             self._clear_writing()
         else:
             self.recognition_feedback = "GEMINI READY — COULD NOT TYPE; line kept"
+            self.exit_after_insert = False
 
     def _recognize_and_auto_insert(self, system_controller) -> None:
         self.last_ink_at = None
@@ -839,6 +882,51 @@ class WholeLineWritingController(AirWritingController):
         else:
             self.recognition_feedback = "COULD NOT TYPE — line kept for retry"
 
+    def _close_to_desktop_after_release(self, system_controller, now: float) -> None:
+        """Keep LIVE state, but disarm actions while the palms come down."""
+        self._set_mode("DESKTOP", system_controller, resume_desktop=False)
+        if system_controller is not None:
+            guard = getattr(system_controller, "guard_actions_until", None)
+            if guard is not None:
+                guard(now + DESKTOP_REARM_DELAY_SECONDS)
+            else:
+                system_controller.reset_actions(require_release=True)
+
+    def _finish_requested_exit(self, system_controller, now: float) -> bool:
+        """Close only after pending ink has been safely inserted."""
+        if (
+            self.exit_after_insert
+            and not self.has_line_ink
+            and self._gemini_future is None
+        ):
+            self._close_to_desktop_after_release(system_controller, now)
+            return True
+        return False
+
+    def _request_safe_exit(self, system_controller, now: float) -> None:
+        """Commit pending handwriting before hiding its only visible copy."""
+        self._lift_pen()
+        self.last_ink_at = None
+        if not self.has_line_ink and self._gemini_future is None:
+            self._close_to_desktop_after_release(system_controller, now)
+            return
+
+        self.exit_after_insert = True
+        if self._gemini_future is None:
+            self._recognize_and_auto_insert(system_controller)
+
+        if self._finish_requested_exit(system_controller, now):
+            return
+        if self._gemini_future is not None:
+            self.recognition_feedback = "FINISHING GEMINI REVIEW BEFORE CLOSING…"
+        else:
+            # No safe insertion happened. Keep the overlay and ink visible so
+            # the user can clear, rewrite, or retry instead of losing work.
+            self.exit_after_insert = False
+            self.recognition_feedback = (
+                f"{self.recognition_feedback} — AIR WRITE KEPT OPEN"
+            )
+
     def _update_line_status(self, lock_states, now: float) -> None:
         if self.pen_down:
             right = "DRAW"
@@ -850,6 +938,8 @@ class WholeLineWritingController(AirWritingController):
             right = f"AIM pinch={pinch:.2f} fingers={openness}%"
         else:
             right = "READY"
+        if self.enter_hold.progress > 0 and not self.enter_hold.latched:
+            right = f"ENTER {round(self.enter_hold.progress * 100)}%"
         if self.undo_hold.progress > 0 and not self.undo_hold.latched:
             left = f"UNDO {round(self.undo_hold.progress * 100)}%"
         elif lock_states["LEFT"].locked:
@@ -857,7 +947,9 @@ class WholeLineWritingController(AirWritingController):
         else:
             left = "PALM CLEAR | PINCH+3 UP UNDO"
         countdown = ""
-        if self.has_line_ink and self.last_ink_at is not None and not self.pen_down:
+        if self.exit_after_insert:
+            countdown = " | SAVING BEFORE CLOSE…"
+        elif self.has_line_ink and self.last_ink_at is not None and not self.pen_down:
             remaining = max(self.idle_seconds - (now - self.last_ink_at), 0.0)
             countdown = f" | AUTO-INSERT {remaining:.1f}s"
         feedback = f" | {self.recognition_feedback}" if self.recognition_feedback else ""
@@ -877,7 +969,6 @@ class WholeLineWritingController(AirWritingController):
         all_hands=None,
     ) -> None:
         self.ensure_canvas(frame_width, frame_height)
-        self._poll_gemini_review(system_controller)
         left = observations.get("LEFT")
         right = observations.get("RIGHT")
         left_open = left is not None and is_open_palm(left[1])
@@ -888,8 +979,10 @@ class WholeLineWritingController(AirWritingController):
         both_open = self.open_palm_count >= 2
 
         if self.mode_hold.update(both_open, now):
-            new_mode = "DESKTOP" if self.is_overlay_active else "AIR_WRITE"
-            self._set_mode(new_mode, system_controller)
+            if self.is_overlay_active:
+                self._request_safe_exit(system_controller, now)
+            else:
+                self._set_mode("AIR_WRITE", system_controller)
         if not self.is_overlay_active:
             if self._gemini_future is not None:
                 self._cancel_gemini_review()
@@ -903,6 +996,20 @@ class WholeLineWritingController(AirWritingController):
             self.pen_pose_metrics = None
             self.overlay.hide_cursor()
             self.clear_hold.update(False, now)
+            self._poll_gemini_review(system_controller)
+            if self._finish_requested_exit(system_controller, now):
+                return
+            self._update_line_status(lock_states, now)
+            return
+
+        if self.exit_after_insert:
+            self._lift_pen()
+            self.pointer_smoother.reset()
+            self.pen_pose_metrics = None
+            self.overlay.hide_cursor()
+            self._poll_gemini_review(system_controller)
+            if self._finish_requested_exit(system_controller, now):
+                return
             self._update_line_status(lock_states, now)
             return
 
@@ -923,6 +1030,8 @@ class WholeLineWritingController(AirWritingController):
             self.overlay.set_preview("")
             self.recognition_feedback = "LINE CLEARED"
         if clear_requested:
+            self._cancel_gemini_review()
+            self.accept_hold.update(False, now)
             self.undo_hold.update(False, now)
             self._lift_pen()
             self._update_line_status(lock_states, now)
@@ -935,6 +1044,8 @@ class WholeLineWritingController(AirWritingController):
         )
         undo_fired = self.undo_hold.update(undo_pose, now)
         if undo_pose:
+            self._cancel_gemini_review()
+            self.accept_hold.update(False, now)
             self._lift_pen()
             if undo_fired:
                 if self._gemini_future is not None:
@@ -945,6 +1056,42 @@ class WholeLineWritingController(AirWritingController):
                     self.recognition_feedback = "LAST STROKE UNDONE"
                 else:
                     self.recognition_feedback = "NOTHING TO UNDO"
+            self._update_line_status(lock_states, now)
+            return
+
+        enter_pose = bool(
+            right is not None
+            and not lock_states["RIGHT"].locked
+            and classify_enter_pose(right[1])
+        )
+        enter_fired = self.enter_hold.update(enter_pose, now)
+        if enter_pose:
+            self._cancel_gemini_review()
+            self.accept_hold.update(False, now)
+            self._lift_pen()
+            if enter_fired:
+                if not self.text_output_allowed:
+                    self.recognition_feedback = "ENTER BLOCKED BY ESC — re-enter Air Write"
+                elif self.has_line_ink:
+                    self.recognition_feedback = "WAIT FOR CURRENT LINE TO INSERT"
+                elif system_controller.commit_key("enter"):
+                    self.recognition_feedback = "ENTER PRESSED"
+                else:
+                    self.recognition_feedback = "COULD NOT PRESS ENTER"
+            self._update_line_status(lock_states, now)
+            return
+
+        accept_pose = bool(
+            right is not None
+            and not lock_states["RIGHT"].locked
+            and is_thumbs_up(right[1])
+        )
+        accept_fired = self.accept_hold.update(accept_pose, now)
+        if accept_pose:
+            self._lift_pen()
+            if accept_fired and self.has_line_ink and self._gemini_future is None:
+                self._recognize_and_auto_insert(system_controller)
+            self._poll_gemini_review(system_controller)
             self._update_line_status(lock_states, now)
             return
 
@@ -968,6 +1115,9 @@ class WholeLineWritingController(AirWritingController):
             return
 
         self._lift_pen()
+        # Apply remote results only after current-frame editing/mode gestures
+        # have had a chance to invalidate the reviewed canvas.
+        self._poll_gemini_review(system_controller)
         if (
             self.has_line_ink
             and self.last_ink_at is not None

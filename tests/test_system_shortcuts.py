@@ -13,6 +13,7 @@ from airdesk.system_shortcuts import (
     ShortcutControlController,
     SwipeGestureDetector,
     SwipeMetrics,
+    classify_enter_pose,
     classify_swipe_pose,
 )
 
@@ -50,6 +51,7 @@ class FakeBackend:
 
     def __init__(self):
         self.hotkeys = []
+        self.mission_control_count = 0
 
     def size(self):
         return 1920, 1080
@@ -65,6 +67,9 @@ class FakeBackend:
 
     def hotkey(self, *keys, _pause):
         self.hotkeys.append((keys, _pause))
+
+    def showMissionControl(self):
+        self.mission_control_count += 1
 
 
 class FakeEscapeMonitor:
@@ -86,6 +91,14 @@ class SwipePoseTests(unittest.TestCase):
         self.assertFalse(
             classify_swipe_pose(make_hand(little_up=True)).is_swipe_pose
         )
+
+    def test_index_only_is_enter_pose(self):
+        self.assertTrue(
+            classify_enter_pose(
+                make_hand(index_up=True, middle_up=False, ring_up=False, little_up=False)
+            )
+        )
+        self.assertFalse(classify_enter_pose(make_hand()))
 
 
 class SwipeDetectorTests(unittest.TestCase):
@@ -131,6 +144,27 @@ class SwipeDetectorTests(unittest.TestCase):
 
 
 class ShortcutControllerTests(unittest.TestCase):
+    def test_air_write_exit_guard_suppresses_shortcuts_without_stopping_live(self):
+        backend = FakeBackend()
+        controller = ShortcutControlController(backend, FakeEscapeMonitor())
+        controller.toggle()
+        unlocked = SimpleNamespace(locked=False)
+        locked = SimpleNamespace(locked=True)
+        locks = {"LEFT": locked, "RIGHT": unlocked}
+        swipe = make_hand()
+
+        controller.guard_actions_until(2.0)
+        controller.update_gestures({"RIGHT": (1.0, swipe, None)}, locks, 1.0)
+        controller.update_gestures(
+            {"RIGHT": (1.0, translated_hand(swipe, dx=0.20), None)},
+            locks,
+            1.3,
+        )
+
+        self.assertTrue(controller.enabled)
+        self.assertEqual(backend.hotkeys, [])
+        self.assertEqual(backend.mission_control_count, 0)
+
     def test_active_right_swipe_emits_configured_hotkey(self):
         backend = FakeBackend()
         controller = ShortcutControlController(backend, FakeEscapeMonitor())
@@ -140,7 +174,7 @@ class ShortcutControllerTests(unittest.TestCase):
         locks = {"LEFT": locked, "RIGHT": unlocked}
 
         # Enabling real output requires a neutral/non-swipe pose before arming.
-        neutral_hand = make_hand(middle_up=False, ring_up=False)
+        neutral_hand = make_hand(little_up=True)
         controller.update_gestures(
             {"RIGHT": (1.0, neutral_hand, None)}, locks, 0.80
         )
@@ -159,6 +193,47 @@ class ShortcutControllerTests(unittest.TestCase):
         )
 
         self.assertEqual(backend.hotkeys, [(NEXT_APP_KEYS, False)])
+
+    def test_up_swipe_opens_native_mission_control(self):
+        backend = FakeBackend()
+        controller = ShortcutControlController(backend, FakeEscapeMonitor())
+        controller.toggle()
+        unlocked = SimpleNamespace(locked=False)
+        locked = SimpleNamespace(locked=True)
+        locks = {"LEFT": locked, "RIGHT": unlocked}
+        neutral = make_hand(little_up=True)
+        start = make_hand()
+
+        controller.update_gestures({"RIGHT": (1.0, neutral, None)}, locks, 0.80)
+        controller.update_gestures({"RIGHT": (1.0, start, None)}, locks, 1.00)
+        controller.update_gestures({"RIGHT": (1.0, start, None)}, locks, 1.19)
+        controller.update_gestures(
+            {"RIGHT": (1.0, translated_hand(start, dy=-0.18), None)},
+            locks,
+            1.25,
+        )
+
+        self.assertEqual(backend.mission_control_count, 1)
+        self.assertEqual(backend.hotkeys, [])
+
+    def test_enter_pose_emits_enter_once_until_release(self):
+        backend = FakeBackend()
+        controller = ShortcutControlController(backend, FakeEscapeMonitor())
+        controller.toggle()
+        unlocked = SimpleNamespace(locked=False)
+        locked = SimpleNamespace(locked=True)
+        locks = {"LEFT": locked, "RIGHT": unlocked}
+        neutral = make_hand(little_up=True)
+        enter = make_hand(
+            index_up=True, middle_up=False, ring_up=False, little_up=False
+        )
+
+        controller.update_gestures({"RIGHT": (1.0, neutral, None)}, locks, 0.50)
+        controller.update_gestures({"RIGHT": (1.0, enter, None)}, locks, 1.00)
+        controller.update_gestures({"RIGHT": (1.0, enter, None)}, locks, 1.31)
+        controller.update_gestures({"RIGHT": (1.0, enter, None)}, locks, 1.70)
+
+        self.assertEqual(backend.hotkeys, [(("enter",), False)])
 
 
 if __name__ == "__main__":
