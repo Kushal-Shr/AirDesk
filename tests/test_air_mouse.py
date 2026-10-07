@@ -62,15 +62,12 @@ class InvalidScreenBackend(FakeMouseBackend):
 class FakeDocumentSafety:
     def __init__(self):
         self.insertions = []
-        self.pending_save = None
         self.closed = False
 
-    def after_text_insert(self, text, save_action):
+    def after_text_insert(self, text):
         self.insertions.append(text)
-        self.pending_save = save_action
 
     def save_now(self, save_action):
-        self.pending_save = None
         return save_action()
 
     def close(self):
@@ -180,15 +177,13 @@ class SystemMouseControllerTests(unittest.TestCase):
         self.assertTrue(self.controller.commit_text("A"))
         self.assertEqual(self.backend.writes, [("A", 0.0, False)])
 
-    def test_successful_text_commit_records_and_schedules_document_save(self):
+    def test_successful_text_commit_records_without_saving_focused_app(self):
         safety = FakeDocumentSafety()
         controller = SystemMouseController(self.backend, document_safety=safety)
 
         self.assertTrue(controller.commit_text("Recovered text "))
         self.assertEqual(safety.insertions, ["Recovered text "])
         self.assertEqual(self.backend.hotkeys, [])
-        self.assertTrue(safety.pending_save())
-        self.assertEqual(self.backend.hotkeys, [(('command', 's'), False)])
 
     def test_manual_document_save_uses_command_s_and_closes_safety_manager(self):
         safety = FakeDocumentSafety()

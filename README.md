@@ -24,15 +24,15 @@ After closing, lower both hands—a short guard ignores the release motion befor
 accepting a fresh desktop gesture in the focused document.
 
 Every successful Air Write insertion is also stored in a local recovery history
-at `~/Library/Application Support/AirDesk/recovery.jsonl`. AirDesk sends one
-debounced **Command-S** to the focused document one second after insertion. Save
-a new document and choose its filename before the demo; otherwise macOS may show
-the application's Save As dialog on the first automatic save. **Save Document**
-is also available from the Air Command Palette for an immediate save.
+at `~/Library/Application Support/AirDesk/recovery.jsonl`. AirDesk does **not**
+automatically send Command-S because the focused app may be a browser or another
+non-document application. Choose **Save Document** from the Air Command Palette
+when the intended document is focused.
 
-Read [DEMO.md](DEMO.md) for the rehearsal sequence, gesture reference, known
-handwriting limits, and recovery steps. These are the current integrated
-controls; the stage-by-stage sections below describe the project's history.
+Read [DEMO_SCRIPT.md](DEMO_SCRIPT.md) for the word-for-word presentation and
+[DEMO.md](DEMO.md) for the gesture reference, handwriting limits, and recovery
+steps. These are the current integrated controls; the stage-by-stage sections
+below describe the project's history.
 
 Run preflight from the project root:
 

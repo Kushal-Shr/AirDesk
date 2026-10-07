@@ -60,7 +60,7 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(status.fps, 0.0)
         self.assertEqual(status.processing_ms, 0.0)
 
-    def test_air_write_is_shown_as_an_overlay_on_live_output(self):
+    def test_air_write_keeps_the_mode_label_live(self):
         status = build_control_panel_status(
             system_enabled=True,
             paused=False,
@@ -74,7 +74,7 @@ class ControlPanelTests(unittest.TestCase):
             writing_active=True,
         )
 
-        self.assertEqual(status.mode, "LIVE · AIR WRITE")
+        self.assertEqual(status.mode, "LIVE")
 
     def test_memory_panel_keeps_latest_status(self):
         panel = MemoryControlPanel()

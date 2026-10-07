@@ -104,8 +104,8 @@ def main() -> int:
     )
     print("Air Write text insertion is armed separately when you enter with both palms.")
     print(
-        "Inserted text is recovery-logged locally and the focused document "
-        "is auto-saved after one second."
+        "Inserted text is recovery-logged locally. Documents are saved only "
+        "when you choose Save Document from the command palette."
     )
     print(f"Recovery history: {document_safety.recovery_path}")
     print("Right thumbs-up recognizes now or retries a retained line.")

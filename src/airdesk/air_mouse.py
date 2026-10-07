@@ -96,6 +96,7 @@ class SystemMouseController:
         return True
 
     def move_from_preview(
+
         self,
         point: tuple[int, int],
         preview_size: tuple[int, int],
@@ -197,14 +198,11 @@ class SystemMouseController:
             lambda: self.backend.write(text, interval=0.0, _pause=False)
         )
         if succeeded and self.document_safety is not None:
-            self.document_safety.after_text_insert(
-                text,
-                self._auto_save_document,
-            )
+            self.document_safety.after_text_insert(text)
         return succeeded
 
-    def _auto_save_document(self) -> bool:
-        """Save after Air Write insertion, even though text output is separate."""
+    def _save_document_output(self) -> bool:
+        """Send Command-S only after an explicit Save Document command."""
         return self._handle_output_error(
             lambda: self.backend.hotkey("command", "s", _pause=False)
         )
@@ -214,8 +212,8 @@ class SystemMouseController:
         if not self.enabled:
             return False
         if self.document_safety is not None:
-            return self.document_safety.save_now(self._auto_save_document)
-        return self._auto_save_document()
+            return self.document_safety.save_now(self._save_document_output)
+        return self._save_document_output()
 
     def commit_key(self, key: str) -> bool:
         """Press one explicit Air Write key while desktop control is paused."""

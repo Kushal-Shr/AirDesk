@@ -57,8 +57,6 @@ def build_control_panel_status(
 ) -> ControlPanelStatus:
     """Translate current runtime values into the panel's stable vocabulary."""
     mode = "PAUSED" if paused else ("LIVE" if system_enabled else "STOPPED")
-    if writing_active:
-        mode = f"{mode} · AIR WRITE"
 
     if left_locked:
         left_hand = "LOCKED"

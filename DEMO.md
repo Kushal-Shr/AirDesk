@@ -1,5 +1,9 @@
 # AirDesk demo rehearsal
 
+For a word-for-word presentation with timing, stage directions, and a
+ninety-second fallback, use [DEMO_SCRIPT.md](DEMO_SCRIPT.md). This file remains
+the detailed gesture and recovery reference.
+
 Use the `additional-features` branch and the existing `.venv`. Start from the
 project root with `./run_airdesk.command`. Keep the laptop on power and use good
 front lighting. Place the demo text field on the Mac's primary display; the
@@ -38,7 +42,7 @@ mirroring is the simplest setup.
 | Undo ink | Hold a left thumb–index pinch with middle, ring, little extended for about 0.4 seconds. Release before undoing again. |
 | Insert | Release the writing pinch and wait two seconds. Uncertain local output goes to Gemini; sufficiently confident output is inserted with one trailing space. |
 | Recognize now / retry | Hold right thumbs-up about 0.35 seconds, then release. This retries a retained line without requiring another stroke. Confidence checks still apply. |
-| Save document | Successful text insertion triggers Command-S after one second. For an immediate save, choose Save Document from the Air Command Palette. Give a new document a filename before the demo. |
+| Save document | Focus the intended document, then choose Save Document from the Air Command Palette. AirDesk never sends Command-S automatically after insertion. |
 | Clear ink | Left open palm for about 0.55 seconds, with the right hand not open. |
 | Return / stop | Both palms for about 0.6 seconds. Pending ink is inserted first; Air Write closes only after the text is safe in the focused app. AirDesk remains LIVE; lower both hands while a brief guard ignores the release motion, then use a fresh gesture. Uncertain ink stays visible for retry. Esc stops all output and returns to Desktop; press M only after an Esc stop. |
 | Quit | Q with the preview focused, or Ctrl+C in the launching Terminal. |
